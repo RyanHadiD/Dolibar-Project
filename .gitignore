@@ -1,0 +1,18 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime and temporary files
+*.log
+*.tmp
+*.cache
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+

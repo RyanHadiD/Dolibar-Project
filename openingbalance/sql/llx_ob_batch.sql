@@ -1,0 +1,23 @@
+CREATE TABLE llx_ob_batch (
+ rowid integer AUTO_INCREMENT PRIMARY KEY,
+ entity integer NOT NULL,
+ ref varchar(32) NOT NULL,
+ label varchar(255) NOT NULL DEFAULT '',
+ cutover_date date NOT NULL,
+ clearing_account varchar(32) NOT NULL DEFAULT '',
+ stock_account varchar(32) NOT NULL DEFAULT '',
+ receivable_account varchar(32) NOT NULL DEFAULT '',
+ payable_account varchar(32) NOT NULL DEFAULT '',
+ journal_code varchar(32) NOT NULL DEFAULT '',
+ status integer NOT NULL DEFAULT 0,
+ note text,
+ fk_user_author integer NOT NULL,
+ fk_user_valid integer,
+ fk_user_post integer,
+ datec datetime NOT NULL,
+ date_validated datetime,
+ date_posted datetime,
+ tms timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+ UNIQUE KEY uk_ob_batch_ref (entity,ref),
+ KEY idx_ob_batch_status (entity,status,cutover_date)
+) ENGINE=innodb;
