@@ -926,7 +926,7 @@ class PerpetualInventory
 		if (mb_strlen($reason) < 5) {
 			throw new DomainException('Alasan pembatalan/revisi wajib diisi minimal 5 karakter.');
 		}
-		if (!in_array($elementType, array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment'), true) || !in_array($actionCode, array('cancel', 'amend'), true)) {
+		if (!in_array($elementType, array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment', 'accounting_journal'), true) || !in_array($actionCode, array('cancel', 'amend'), true)) {
 			throw new DomainException('Jenis dokumen atau aksi audit tidak valid.');
 		}
 		$this->q('INSERT INTO '.$this->table('pi_document_action').' (entity,element_type,fk_element,element_ref,action_code,reason,snapshot_json,fk_user,date_action) VALUES ('.$this->entity.','.$this->str($elementType).','.(int) $elementId.','.$this->str($elementRef).','.$this->str($actionCode).','.$this->str(mb_substr($reason, 0, 1000)).','.($snapshot !== null ? $this->str($snapshot) : 'NULL').','.(int) $user->id.','.$this->str($this->db->idate(dol_now())).')');

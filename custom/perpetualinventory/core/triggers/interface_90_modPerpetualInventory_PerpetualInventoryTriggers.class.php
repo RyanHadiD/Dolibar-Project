@@ -54,7 +54,7 @@ class InterfacePerpetualInventoryTriggers extends DolibarrTriggers
 			if (in_array($action, array('PAYMENT_CUSTOMER_DELETE', 'PAYMENT_SUPPLIER_DELETE'), true)) {
 				$reason = trim(GETPOST('reason', 'restricthtml'));
 				if (mb_strlen($reason) < 5) {
-					throw new DomainException('Gunakan Cancel & Recreate dan isi alasan minimal 5 karakter untuk membatalkan payment.');
+					throw new DomainException('Gunakan Revisi Payment dan isi alasan minimal 5 karakter untuk membatalkan serta membuat ulang payment.');
 				}
 			}
 			if ($action === 'BOOKKEEPING_CREATE' && $object->doc_type === 'supplier_invoice') {

@@ -1,0 +1,20 @@
+CREATE TABLE llx_cl_check_log (
+ rowid integer AUTO_INCREMENT PRIMARY KEY,
+ entity integer NOT NULL,
+ fk_soc integer NOT NULL,
+ element_type varchar(32) NOT NULL,
+ fk_element integer NOT NULL,
+ element_ref varchar(128) NOT NULL DEFAULT '',
+ decision varchar(16) NOT NULL,
+ exposure double(24,8) NOT NULL DEFAULT 0,
+ document_amount double(24,8) NOT NULL DEFAULT 0,
+ projected_exposure double(24,8) NOT NULL DEFAULT 0,
+ credit_limit double(24,8) NOT NULL DEFAULT 0,
+ overdue_amount double(24,8) NOT NULL DEFAULT 0,
+ oldest_overdue_days integer NOT NULL DEFAULT 0,
+ reason varchar(1000) DEFAULT NULL,
+ fk_user integer NOT NULL,
+ date_check datetime NOT NULL,
+ KEY idx_cl_check_log_doc (entity,element_type,fk_element),
+ KEY idx_cl_check_log_soc (entity,fk_soc,date_check)
+) ENGINE=innodb;

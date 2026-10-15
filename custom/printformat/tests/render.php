@@ -29,6 +29,30 @@ foreach (PrintFormatDoctypeRegistry::all() as $doctype => $definition) {
 }
 pfCheck(true, 'all native default templates have valid syntax');
 
+$journalObject = (object) array(
+	'id' => 41, 'entity' => (int) $conf->entity, 'element' => 'accountingbookkeeping',
+	'piece_num' => 41, 'ref' => 'JRN-0041', 'doc_date' => dol_now(),
+	'code_journal' => 'OD', 'journal_label' => 'General Journal', 'doc_ref' => 'MEMO-1',
+	'doc_type' => 'manual', 'linesmvt' => array(
+		(object) array('id' => 1, 'numero_compte' => '1100', 'label_compte' => 'Cash', 'label_operation' => 'Test', 'debit' => 125, 'credit' => 0),
+		(object) array('id' => 2, 'numero_compte' => '4100', 'label_compte' => 'Sales', 'label_operation' => 'Test', 'debit' => 0, 'credit' => 125),
+	),
+);
+$journalContext = $renderer->contextForObject($journalObject, $langs, 'accounting_journal');
+pfCheck(count($journalContext['lines']) === 2 && $journalContext['totals']['debit'] === 125.0 && $journalContext['totals']['credit'] === 125.0, 'accounting journal groups movement lines and totals debit/credit');
+$journalHtml = $renderer->render(PrintFormat::defaultData('accounting_journal')['template_html'], $journalContext, $langs);
+pfCheck(strpos($journalHtml, 'JRN-0041') !== false && strpos($journalHtml, '1100') !== false, 'accounting journal default template renders transaction data');
+
+$paymentObject = (object) array(
+	'id' => 51, 'entity' => (int) $conf->entity, 'element' => 'payment', 'ref' => 'PAY-0051',
+	'date' => dol_now(), 'amount' => 250, 'type_label' => 'Bank transfer', 'num_payment' => 'TRX-1',
+	'thirdparty' => (object) array('id' => 1, 'name' => 'Customer Test'),
+	'lines' => array((object) array('id' => 2, 'invoice_ref' => 'INV-1', 'party_name' => 'Customer Test', 'invoice_total' => 500, 'paid_amount' => 250)),
+);
+$paymentContext = $renderer->contextForObject($paymentObject, $langs, 'customer_payment');
+$paymentHtml = $renderer->render(PrintFormat::defaultData('customer_payment')['template_html'], $paymentContext, $langs);
+pfCheck($paymentContext['doc']['payment_method'] === 'Bank transfer' && strpos($paymentHtml, 'INV-1') !== false, 'customer payment default template renders allocation data');
+
 $context = array(
 	'doc' => array('ref' => 'INV<001>', 'currency' => $conf->currency, 'note_public' => ''),
 	'lines' => array(

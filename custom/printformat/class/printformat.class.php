@@ -37,7 +37,9 @@ class PrintFormatDoctypeRegistry
 			'thirdparty' => self::item('Third Party', 'company', array('company'), 'societe', 'core/modules/societe/doc/', '/societe/class/societe.class.php', 'Societe', 'societe'),
 			'member' => self::item('Member', 'member', array('member'), 'member', 'core/modules/member/doc/', '/adherents/class/adherent.class.php', 'Adherent', 'adherent'),
 			'agenda_event' => self::item('Agenda Event', 'action', array('agenda', 'actions'), 'action', 'core/modules/action/doc/', '/comm/action/class/actioncomm.class.php', 'ActionComm', 'actioncomm'),
+			'customer_payment' => self::item('Customer Payment', 'payment', array('payment'), 'payment', '', '/compta/paiement/class/paiement.class.php', 'Paiement', 'paiement', false),
 			'supplier_payment' => self::item('Supplier Payment', 'supplier_payment', array('supplier_payment'), 'payment_supplier', 'core/modules/supplier_payment/doc/', '/fourn/class/paiementfourn.class.php', 'PaiementFourn', 'paiementfourn'),
+			'accounting_journal' => self::item('Accounting Journal', 'accounting_journal', array('accounting_journal'), 'accountingbookkeeping', '', '/accountancy/class/bookkeeping.class.php', 'BookKeeping', 'accounting_bookkeeping', false),
 			'evaluation' => self::item('HR Evaluation', 'evaluation', array('hrm'), 'evaluation', 'core/modules/hrm/doc/', '/hrm/class/evaluation.class.php', 'Evaluation', 'hrm_evaluation'),
 			'user' => self::item('User', 'user', array('user'), 'user', 'core/modules/user/doc/', '/user/class/user.class.php', 'User', 'user'),
 			'user_group' => self::item('User Group', 'group', array('usergroup'), 'usergroup', 'core/modules/usergroup/doc/', '/user/class/usergroup.class.php', 'UserGroup', 'usergroup'),
@@ -47,7 +49,7 @@ class PrintFormatDoctypeRegistry
 		);
 	}
 
-	private static function item($label, $modelType, $moduleparts, $element, $modelpath, $classFile, $className, $table)
+	private static function item($label, $modelType, $moduleparts, $element, $modelpath, $classFile, $className, $table, $registerModel = true)
 	{
 		return array(
 			'label' => $label,
@@ -58,6 +60,7 @@ class PrintFormatDoctypeRegistry
 			'class_file' => $classFile,
 			'class_name' => $className,
 			'table' => $table,
+			'register_model' => $registerModel,
 		);
 	}
 
@@ -168,7 +171,19 @@ class PrintFormat
 		$result = $this->query('SELECT * FROM '.$this->table().' WHERE entity='.$this->entity.' AND doctype='.$this->str($doctype).' AND active=1 ORDER BY is_default DESC,name ASC LIMIT 1');
 		$row = $this->db->fetch_object($result);
 		if (!$row) {
-			throw new DomainException('Belum ada print format aktif untuk '.$doctype.'.');
+			// Modules already enabled before a new doctype was introduced do not run init again.
+			// Provision its standard format on first use so the print action works immediately.
+			$default = self::defaultData($doctype);
+			$default['active'] = 1;
+			$default['is_default'] = 1;
+			try {
+				$this->save(0, $default, 0);
+			} catch (Throwable $e) {
+				// A concurrent request may have created the same default; retry the lookup.
+			}
+			$result = $this->query('SELECT * FROM '.$this->table().' WHERE entity='.$this->entity.' AND doctype='.$this->str($doctype).' AND active=1 ORDER BY is_default DESC,name ASC LIMIT 1');
+			$row = $this->db->fetch_object($result);
+			if (!$row) throw new DomainException('Belum ada print format aktif untuk '.$doctype.'.');
 		}
 		return $this->normalizeFormatRow($row);
 	}
@@ -429,6 +444,12 @@ class PrintFormat
 
 	private static function genericDefaultData($doctype, $label)
 	{
+		if (in_array($doctype, array('customer_payment', 'supplier_payment'), true)) {
+			return self::paymentDefaultData($doctype, $label);
+		}
+		if ($doctype === 'accounting_journal') {
+			return self::accountingJournalDefaultData($doctype, $label);
+		}
 		return array(
 			'name' => $label.' Standard',
 			'doctype' => $doctype,
@@ -444,6 +465,32 @@ class PrintFormat
 			'is_default' => 0,
 			'template_css' => "body { font-family: dejavusans; font-size: 10pt; color: #1f2937; }\n.header { width: 100%; border-bottom: 2px solid #1d4ed8; margin-bottom: 16px; }\n.title { color: #1d4ed8; font-size: 21pt; font-weight: bold; }\n.muted { color: #6b7280; }\n.meta { width: 100%; margin: 12px 0; }\ntable.items { width: 100%; border-collapse: collapse; margin-top: 16px; }\ntable.items th { background-color: #1d4ed8; color: white; border: 1px solid #1d4ed8; padding: 6px; }\ntable.items td { border-bottom: 1px solid #d1d5db; padding: 6px; }\n.right { text-align: right; }\n.note { background-color: #f9fafb; margin-top: 18px; padding: 10px; }\n",
 			'template_html' => '<table class="header"><tr><td width="55%">{% if company.logo %}<img src="{{ company.logo }}" height="42">{% endif %}<br><b>{{ company.name }}</b><br><span class="muted">{{ company.address | nl2br }}</span></td><td width="45%" class="right"><span class="title">'.$label.'</span><br><b>{{ doc.ref }}</b><br>{{ doc.date | date }}</td></tr></table>{% if party.name %}<table class="meta"><tr><td><span class="muted">PIHAK TERKAIT</span><br><b>{{ party.name }}</b><br>{{ party.address | nl2br }}<br>{{ party.zip }} {{ party.town }}</td><td class="right"><span class="muted">STATUS</span><br>{{ doc.status }}</td></tr></table>{% endif %}<h3>{{ doc.label }}</h3>{% if doc.description %}<p>{{ doc.description | nl2br }}</p>{% endif %}{% if lines %}<table class="items"><thead><tr><th width="8%">No.</th><th width="47%">Deskripsi</th><th width="15%" class="right">Qty / Satuan</th><th width="15%" class="right">Harga</th><th width="15%" class="right">Jumlah</th></tr></thead><tbody>{% for line in lines %}<tr><td width="8%">{{ loop.index }}</td><td width="47%"><b>{{ line.ref }}</b>{% if line.ref %}<br>{% endif %}{{ line.description | nl2br }}</td><td width="15%" class="right">{{ line.qty | number }} {{ line.unit_short_label }}</td><td width="15%" class="right">{{ line.unit_price | money }}</td><td width="15%" class="right">{{ line.total_excl_tax | money }}</td></tr>{% endfor %}</tbody></table>{% endif %}{% if totals.has_amount %}<table width="45%" align="right"><tr><td>Subtotal</td><td class="right">{{ totals.excl_tax | money }}</td></tr><tr><td>Pajak</td><td class="right">{{ totals.tax | money }}</td></tr><tr><td><b>Total</b></td><td class="right"><b>{{ totals.incl_tax | money }}</b></td></tr></table>{% endif %}{% if doc.note_public %}<div class="note">{{ doc.note_public | nl2br }}</div>{% endif %}',
+		);
+	}
+
+	private static function paymentDefaultData($doctype, $label)
+	{
+		return array(
+			'name' => $label.' Standard',
+			'doctype' => $doctype,
+			'page_format' => 'A4', 'custom_width' => null, 'custom_height' => null,
+			'orientation' => 'P', 'margin_top' => 12, 'margin_right' => 12, 'margin_bottom' => 12, 'margin_left' => 12,
+			'active' => 1, 'is_default' => 0,
+			'template_css' => "body { font-family: dejavusans; font-size: 10pt; color: #1f2937; }\n.header { width: 100%; border-bottom: 2px solid #1d4ed8; margin-bottom: 16px; }\n.title { color: #1d4ed8; font-size: 21pt; font-weight: bold; }\n.muted { color: #6b7280; }\n.meta { width: 100%; margin: 12px 0; }\ntable.items { width: 100%; border-collapse: collapse; margin-top: 16px; }\ntable.items th { background-color: #1d4ed8; color: white; border: 1px solid #1d4ed8; padding: 6px; }\ntable.items td { border-bottom: 1px solid #d1d5db; padding: 6px; }\n.right { text-align: right; }\n.total { background-color: #eff6ff; font-weight: bold; }\n.note { background-color: #f9fafb; margin-top: 18px; padding: 10px; }\n",
+			'template_html' => '<table class="header"><tr><td width="55%">{% if company.logo %}<img src="{{ company.logo }}" height="42">{% endif %}<br><b>{{ company.name }}</b><br><span class="muted">{{ company.address | nl2br }}</span></td><td width="45%" class="right"><span class="title">BUKTI PEMBAYARAN</span><br><b>{{ doc.ref }}</b><br>{{ doc.date | date }}</td></tr></table><table class="meta"><tr><td width="55%"><span class="muted">PIHAK TERKAIT</span><br><b>{{ party.name }}</b><br>{{ party.address | nl2br }}<br>{{ party.zip }} {{ party.town }}</td><td width="45%"><span class="muted">METODE PEMBAYARAN</span><br>{{ doc.payment_method }}<br><br><span class="muted">NOMOR PEMBAYARAN</span><br>{{ doc.num_payment }}</td></tr></table><table class="items"><thead><tr><th width="8%">No.</th><th width="24%">Invoice</th><th width="32%">Pihak</th><th width="18%" class="right">Nilai Invoice</th><th width="18%" class="right">Dibayar</th></tr></thead><tbody>{% for line in lines %}<tr><td width="8%">{{ loop.index }}</td><td width="24%">{{ line.invoice_ref }}</td><td width="32%">{{ line.party_name }}</td><td width="18%" class="right">{{ line.invoice_total | money }}</td><td width="18%" class="right">{{ line.paid_amount | money }}</td></tr>{% endfor %}<tr class="total"><td colspan="4">TOTAL PEMBAYARAN</td><td class="right">{{ totals.incl_tax | money }}</td></tr></tbody></table>{% if doc.note_private %}<div class="note"><b>Catatan</b><br>{{ doc.note_private | nl2br }}</div>{% endif %}',
+		);
+	}
+
+	private static function accountingJournalDefaultData($doctype, $label)
+	{
+		return array(
+			'name' => $label.' Standard',
+			'doctype' => $doctype,
+			'page_format' => 'A4', 'custom_width' => null, 'custom_height' => null,
+			'orientation' => 'P', 'margin_top' => 12, 'margin_right' => 12, 'margin_bottom' => 12, 'margin_left' => 12,
+			'active' => 1, 'is_default' => 0,
+			'template_css' => "body { font-family: dejavusans; font-size: 9.5pt; color: #1f2937; }\n.header { width: 100%; border-bottom: 2px solid #1d4ed8; margin-bottom: 14px; }\n.title { color: #1d4ed8; font-size: 20pt; font-weight: bold; }\n.muted { color: #6b7280; }\n.meta { width: 100%; margin: 10px 0; }\ntable.items { width: 100%; border-collapse: collapse; margin-top: 14px; }\ntable.items th { background-color: #1d4ed8; color: white; border: 1px solid #1d4ed8; padding: 6px; }\ntable.items td { border-bottom: 1px solid #d1d5db; padding: 6px; }\n.right { text-align: right; }\n.total { background-color: #eff6ff; font-weight: bold; }\n",
+			'template_html' => '<table class="header"><tr><td width="55%">{% if company.logo %}<img src="{{ company.logo }}" height="42">{% endif %}<br><b>{{ company.name }}</b><br><span class="muted">{{ company.address | nl2br }}</span></td><td width="45%" class="right"><span class="title">BUKTI JURNAL</span><br><b>{{ doc.ref }}</b><br>No. transaksi: {{ doc.piece_num }}</td></tr></table><table class="meta"><tr><td width="50%"><span class="muted">JURNAL</span><br><b>{{ doc.code_journal }} — {{ doc.journal_label }}</b></td><td width="50%" class="right"><span class="muted">TANGGAL</span><br>{{ doc.date | date }}</td></tr><tr><td><span class="muted">REFERENSI DOKUMEN</span><br>{{ doc.doc_ref }}</td><td class="right"><span class="muted">JENIS DOKUMEN</span><br>{{ doc.doc_type }}</td></tr></table><table class="items"><thead><tr><th width="6%">No.</th><th width="17%">Akun</th><th width="20%">Subledger</th><th width="29%">Keterangan</th><th width="14%" class="right">Debit</th><th width="14%" class="right">Kredit</th></tr></thead><tbody>{% for line in lines %}<tr><td width="6%">{{ loop.index }}</td><td width="17%">{{ line.numero_compte }}<br><span class="muted">{{ line.label_compte }}</span></td><td width="20%">{{ line.subledger_account }}<br><span class="muted">{{ line.subledger_label }}</span></td><td width="29%">{{ line.label_operation }}</td><td width="14%" class="right">{{ line.debit | money }}</td><td width="14%" class="right">{{ line.credit | money }}</td></tr>{% endfor %}<tr class="total"><td colspan="4">TOTAL</td><td class="right">{{ totals.debit | money }}</td><td class="right">{{ totals.credit | money }}</td></tr></tbody></table>',
 		);
 	}
 
@@ -520,6 +567,8 @@ class PrintFormatRenderer
 	{
 		global $conf, $mysoc;
 
+		$this->preparePrintableObject($object, $doctype);
+
 		if (method_exists($object, 'fetch_thirdparty')) {
 			$object->fetch_thirdparty();
 		}
@@ -587,6 +636,12 @@ class PrintFormatRenderer
 		$totalExcl = (float) ($useMultiCurrency ? ($object->multicurrency_total_ht ?? 0) : ($object->total_ht ?? $object->amount ?? 0));
 		$totalTax = (float) ($useMultiCurrency ? ($object->multicurrency_total_tva ?? 0) : ($object->total_tva ?? 0));
 		$totalIncl = (float) ($useMultiCurrency ? ($object->multicurrency_total_ttc ?? 0) : ($object->total_ttc ?? $object->amount ?? 0));
+		$totalDebit = 0.0;
+		$totalCredit = 0.0;
+		foreach ((array) ($object->lines ?? array()) as $line) {
+			$totalDebit += (float) ($line->debit ?? 0);
+			$totalCredit += (float) ($line->credit ?? 0);
+		}
 
 		$warehouse = $this->warehouseContext($object);
 		$documentContext = array_merge($this->scalarObjectFields($object), array(
@@ -595,7 +650,7 @@ class PrintFormatRenderer
 			'label' => (string) ($object->label ?? $object->title ?? $object->subject ?? ''),
 			'description' => (string) ($object->description ?? $object->desc ?? ''),
 			'customer_ref' => (string) ($object->ref_client ?? $object->ref_customer ?? $object->ref_supplier ?? ''),
-			'date' => $object->date ?? $object->date_creation ?? $object->datec ?? null,
+			'date' => $object->date ?? $object->doc_date ?? $object->date_creation ?? $object->datec ?? null,
 			'due_date' => $object->date_lim_reglement ?? $object->date_end ?? null,
 			'delivery_date' => $object->date_delivery ?? $object->date_livraison ?? $object->date_expedition ?? $object->date_shipping ?? null,
 			'date_start' => $object->date_start ?? $object->date_debut ?? null,
@@ -606,7 +661,7 @@ class PrintFormatRenderer
 			'note_public' => (string) ($object->note_public ?? ''),
 			'note_private' => (string) ($object->note_private ?? ''),
 			'payment_terms' => (string) ($object->cond_reglement_doc ?? ''),
-			'payment_method' => (string) ($object->mode_reglement_code ?? ''),
+			'payment_method' => (string) ($object->mode_reglement_code ?? $object->type_label ?? $object->type_code ?? ''),
 			'warehouse' => $warehouse['label'],
 			'warehouse_id' => $warehouse['id'],
 			'warehouse_ref' => $warehouse['ref'],
@@ -645,8 +700,58 @@ class PrintFormatRenderer
 				'deposits' => $deposits,
 				'paid' => $paid,
 				'balance' => $totalIncl - $paid,
+				'debit' => $totalDebit,
+				'credit' => $totalCredit,
 			),
 		);
+	}
+
+	/** Load record collections that Dolibarr does not expose through ->lines. */
+	private function preparePrintableObject($object, $doctype)
+	{
+		global $db, $conf;
+
+		if ($doctype === 'accounting_journal') {
+			if (empty($object->linesmvt) && !empty($object->piece_num) && method_exists($object, 'fetchAllPerMvt')) {
+				$object->fetchAllPerMvt((int) $object->piece_num);
+			}
+			$object->lines = (array) ($object->linesmvt ?? array());
+			$object->date = $object->doc_date ?? null;
+			$object->label = $object->journal_label ?? '';
+			if (empty($object->ref)) $object->ref = 'JURNAL-'.(int) ($object->piece_num ?? 0);
+			return;
+		}
+
+		if (!in_array($doctype, array('customer_payment', 'supplier_payment'), true) || !empty($object->lines)) {
+			return;
+		}
+		if (method_exists($object, 'fetch_thirdparty')) $object->fetch_thirdparty();
+		$isSupplier = $doctype === 'supplier_payment';
+		$linkTable = $isSupplier ? 'paiementfourn_facturefourn' : 'paiement_facture';
+		$invoiceTable = $isSupplier ? 'facture_fourn' : 'facture';
+		$linkInvoice = $isSupplier ? 'fk_facturefourn' : 'fk_facture';
+		$linkPayment = $isSupplier ? 'fk_paiementfourn' : 'fk_paiement';
+		$sql = 'SELECT f.rowid AS invoice_id, f.ref AS invoice_ref, f.total_ttc AS invoice_total, pf.amount AS paid_amount, s.nom AS party_name';
+		$sql .= ' FROM '.$db->prefix().$linkTable.' pf';
+		$sql .= ' INNER JOIN '.$db->prefix().$invoiceTable.' f ON f.rowid=pf.'.$linkInvoice;
+		$sql .= ' INNER JOIN '.$db->prefix().'societe s ON s.rowid=f.fk_soc';
+		$sql .= ' WHERE pf.'.$linkPayment.'='.(int) ($object->id ?? 0);
+		$sql .= ' AND f.entity IN ('.getEntity($isSupplier ? 'facture_fourn' : 'invoice').') ORDER BY f.rowid';
+		$result = $db->query($sql);
+		if (!$result) throw new RuntimeException($db->lasterror());
+		$object->lines = array();
+		while ($row = $db->fetch_object($result)) {
+			$row->id = (int) $row->invoice_id;
+			$row->ref = (string) $row->invoice_ref;
+			$row->label = (string) $row->party_name;
+			$row->description = (string) $row->party_name;
+			$row->total = (float) $row->paid_amount;
+			$row->total_ht = (float) $row->paid_amount;
+			$row->total_ttc = (float) $row->paid_amount;
+			$object->lines[] = $row;
+		}
+		$db->free($result);
+		$object->entity = (int) ($object->entity ?? $conf->entity);
 	}
 
 	private function scalarObjectFields($object)

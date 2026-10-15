@@ -1,6 +1,13 @@
 # Perpetual Inventory untuk Dolibarr 24
 
-Modul versi 1.3.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
+Versi 1.4 menambahkan revisi terkontrol untuk Accounting Journal manual yang
+sudah divalidasi. Journal hanya dapat dibuka kembali jika belum diekspor dan
+bukan hasil posting otomatis dokumen sumber. Alasan wajib dan snapshot lengkap
+sebelum perubahan disimpan dalam Riwayat Cancel/Revisi. Revisi Payment tetap
+memakai alur aman batalkan lalu buat ulang karena Payment native Dolibarr tidak
+memiliki status Draft yang dapat diedit.
+
+Modul versi 1.4.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
 
 ## Get Items From
 
@@ -10,6 +17,9 @@ Shipment dan Reception dapat dibuat dengan alur ERP-style dari menu Products/Ser
 - **Shipment → Get Items From Sales Order** menampilkan Sales Order tervalidasi yang masih memiliki qty belum dikirim.
 - **Reception → Get Items From Purchase Order** menampilkan Purchase Order yang sudah dikirim ke supplier dan masih memiliki qty belum diterima.
 - Dari Reception berstatus Draft, **Get Items From Purchase Order** menambahkan item ke draft yang sedang dibuka dan tidak membuat Reception baru. Supplier harus sama, lalu qty, warehouse, lot/batch, dan tanggal kedaluwarsa dapat diperiksa sebelum item diambil.
+- Dari Customer Invoice berstatus Draft, **Get Items From Shipment** menambahkan qty Shipment yang belum ditagihkan dari customer yang sama.
+- Dari Supplier Invoice berstatus Draft, **Get Items From Reception** menambahkan qty Reception yang belum ditagihkan dari supplier yang sama.
+- Relasi dibuat sampai tingkat baris sehingga impor berikutnya hanya menampilkan qty yang masih outstanding dan mencegah penagihan ganda.
 
 Setelah order dipilih dari menu New, sistem menampilkan baris outstanding dan meminta qty/warehouse sebelum meneruskan data lengkap ke form Shipment/Reception native Dolibarr. Pemilihan qty parsial, warehouse, batch/serial, serta hubungan dokumen tetap diproses oleh core Dolibarr. Dokumen draft dan tervalidasi yang belum dibatalkan ikut diperhitungkan sebagai qty yang sudah diproses agar tidak terjadi pengambilan ganda.
 
@@ -82,9 +92,9 @@ Tombol **Mulai perpetual inventory** hanya mengaktifkan trigger setelah seluruh 
 
 ### Cancel & Amend lintas dokumen
 
-Workflow audit berlaku pada rantai transaksi utama penjualan dan pembelian: Sales Order, Shipment, Customer Invoice, Customer Payment, Purchase Order, Reception, Vendor Invoice, dan Supplier Payment. Setiap aksi membutuhkan alasan minimal lima karakter dan menyimpan snapshot dokumen pada `pi_document_action`. Dokumen harus diproses dari hilir ke hulu: payment, invoice, shipment/reception, lalu order. Dokumen turunan aktif, pembayaran yang belum dibatalkan, periode terkunci, dan bank line yang sudah direkonsiliasi tetap memblokir perubahan.
+Workflow audit berlaku pada seluruh dokumen transaksi utama: Sales Order, Shipment, Customer Invoice, Customer Payment, Purchase Order, Reception, Vendor Invoice, Supplier Payment, dan Accounting Journal manual. Setiap aksi membutuhkan alasan minimal lima karakter dan menyimpan snapshot dokumen pada `pi_document_action`. Dokumen harus diproses dari hilir ke hulu: payment, invoice, shipment/reception, lalu order. Dokumen turunan aktif, pembayaran yang belum dibatalkan, periode terkunci, bank line yang sudah direkonsiliasi, journal otomatis, dan journal yang sudah diekspor tetap memblokir perubahan.
 
-Order, Shipment, Reception, dan Invoice menggunakan **Cancel & Amend** untuk kembali ke Draft. Payment menggunakan **Cancel & Recreate** karena payment Dolibarr tidak memiliki model draft-edit yang setara; alokasi lama dibatalkan secara native, invoice dibuka kembali, audit disimpan, lalu pengguna diarahkan ke formulir payment pengganti. Payment yang sudah direkonsiliasi bank tidak diubah otomatis.
+Order, Shipment, Reception, dan Invoice menggunakan **Cancel & Amend** untuk kembali ke Draft. Customer Order, Customer Invoice, Purchase Order, dan Vendor Invoice memakai satu halaman konfirmasi yang seragam; snapshot sebelum revisi disimpan dan setiap siklus diberi urutan R1, R2, dan seterusnya pada riwayat. Payment menggunakan **Cancel & Recreate** karena payment Dolibarr tidak memiliki model draft-edit yang setara; alokasi lama dibatalkan secara native, invoice dibuka kembali, audit disimpan, lalu pengguna diarahkan ke formulir payment pengganti. Payment yang sudah direkonsiliasi bank tidak diubah otomatis.
 
 - **Opname:** masukkan jumlah fisik akhir, termasuk nol. Jika lebih tinggi dari stok sistem, isi modal per unit untuk selisih masuk. Jumlah yang sama tidak memerlukan jurnal.
 - **Saldo awal dari nol:** sebelum ada transaksi operasional, gunakan Operasi Stok → Saldo awal. Operasi ini menambah stok dan menjurnal Debit Persediaan / Kredit Penyesuaian Saldo Awal. Setelah Reception, Shipment, penyesuaian, transfer, atau retur pertama, input saldo awal ditutup.

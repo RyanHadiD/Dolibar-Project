@@ -7,7 +7,7 @@ require_once __DIR__.'/../class/perpetualinventory.class.php';
 
 $piFinancialPages = array('generalledger.php', 'profitloss.php', 'balancesheet.php', 'grossprofit.php', 'receivablepayable.php', 'dailyreport.php');
 $piIsFinancialPage = in_array(basename($_SERVER['SCRIPT_NAME']), $piFinancialPages, true);
-$piIsLifecyclePage = basename($_SERVER['SCRIPT_NAME']) === 'document_action.php';
+$piIsLifecyclePage = in_array(basename($_SERVER['SCRIPT_NAME']), array('document_action.php', 'journal_action.php'), true);
 $piRequiredRight = $piIsFinancialPage ? 'financial' : 'read';
 if (!isModEnabled('perpetualinventory') || !empty($user->socid) || (!$piIsLifecyclePage && !$user->hasRight('perpetualinventory', $piRequiredRight))) {
 	accessforbidden();

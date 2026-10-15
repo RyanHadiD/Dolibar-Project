@@ -38,7 +38,61 @@ class ActionsPrintFormat
 		$nonce = getNonce();
 		$this->resprints = '<script nonce="'.$nonce.'">window.PrintFormatDirectExport='.json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT).';</script>';
 		$this->resprints .= '<script nonce="'.$nonce.'" src="'.dol_buildpath('/printformat/js/direct-export.js?v=0.5.1', 1).'" defer></script>';
+		$journalPiece = GETPOSTINT('piece_num');
+		if ($journalPiece > 0 && strpos((string) ($_SERVER['PHP_SELF'] ?? ''), '/accountancy/bookkeeping/card.php') !== false && $user->hasRight('accounting', 'mouvements', 'lire') && $user->hasRight('printformat', 'read')) {
+			$controls = $this->directPrintControls('accounting_journal', $journalPiece);
+			$this->resprints .= '<script nonce="'.$nonce.'">jQuery(function(){if(jQuery(".pf-print-form").length)return;var b=jQuery("<div class=\"tabsAction pf-print-actions\"></div>").html('.json_encode($controls).');var anchor=jQuery(".fichecenter").first();if(anchor.length){anchor.after(b);}else{jQuery("#id-right").prepend(b);}});</script>';
+		}
 		return 0;
+	}
+
+	/** Add direct print actions to records without a native build-document panel. */
+	public function addMoreActionsButtons($parameters, &$object, &$action)
+	{
+		global $user;
+		$this->resprints = '';
+		if (!$user->hasRight('printformat', 'read') || !is_object($object)) return 0;
+
+		$doctype = '';
+		$id = 0;
+		if (($object->element ?? '') === 'payment' && $user->hasRight('facture', 'lire')) {
+			$doctype = 'customer_payment';
+			$id = (int) ($object->id ?? 0);
+		} elseif (($object->element ?? '') === 'accountingbookkeeping' && $user->hasRight('accounting', 'mouvements', 'lire')) {
+			$doctype = 'accounting_journal';
+			$id = (int) ($object->piece_num ?? 0);
+		}
+		if (!$doctype || $id <= 0) return 0;
+
+		$button = $this->directPrintControls($doctype, $id);
+		// addMoreActionsButtons callers print buttons directly; most do not render resPrint.
+		print $button;
+		return 0;
+	}
+
+	/** Build format selection and a PDF action for records without native builddoc UI. */
+	private function directPrintControls($doctype, $id)
+	{
+		global $conf;
+		$repository = new PrintFormat($this->db, $conf->entity);
+		$formats = $repository->all($doctype, true);
+		if (!$formats) {
+			$repository->getDefault($doctype);
+			$formats = $repository->all($doctype, true);
+		}
+		$options = '';
+		foreach ($formats as $format) {
+			$options .= '<option value="'.(int) $format->rowid.'"'.(!empty($format->is_default) ? ' selected' : '').'>'.dol_escape_htmltag($format->name).'</option>';
+		}
+		$url = dol_buildpath('/printformat/document.php', 1);
+		$html = '<form class="inline-block pf-print-form" action="'.dol_escape_htmltag($url).'" method="get" target="_blank">';
+		$html .= '<input type="hidden" name="doctype" value="'.dol_escape_htmltag($doctype).'">';
+		$html .= '<input type="hidden" name="id" value="'.(int) $id.'">';
+		$html .= '<label class="opacitymedium" for="pf-format-'.$doctype.'-'.$id.'">Print format</label> ';
+		$html .= '<select class="flat minwidth200" id="pf-format-'.$doctype.'-'.$id.'" name="format_id">'.$options.'</select> ';
+		$html .= '<button class="butAction pf-print-pdf" type="submit">'.img_picto('', 'file-pdf').' Print PDF</button>';
+		$html .= '</form>';
+		return $html;
 	}
 
 	/** Supply a meaningful fallback for legacy document lines with no stored unit. */

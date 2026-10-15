@@ -65,11 +65,11 @@ function pfPostValue($name, $default = '')
 function pfFields($doctype = '')
 {
 	$groups = array(
-		'Document' => array('doc.ref', 'doc.label', 'doc.description | nl2br', 'doc.customer_ref', 'doc.date | date', 'doc.due_date | date', 'doc.delivery_date | date', 'doc.date_start | date', 'doc.date_end | date', 'doc.status', 'doc.type', 'doc.currency', 'doc.note_public | nl2br', 'doc.note_private | nl2br', 'doc.payment_terms', 'doc.payment_method', 'doc.warehouse', 'doc.warehouse_ref', 'doc.author', 'doc.validator', 'doc.approver', 'doc.extrafields.field_name'),
+		'Document' => array('doc.ref', 'doc.label', 'doc.description | nl2br', 'doc.customer_ref', 'doc.date | date', 'doc.due_date | date', 'doc.delivery_date | date', 'doc.date_start | date', 'doc.date_end | date', 'doc.status', 'doc.type', 'doc.currency', 'doc.note_public | nl2br', 'doc.note_private | nl2br', 'doc.payment_terms', 'doc.payment_method', 'doc.num_payment', 'doc.piece_num', 'doc.code_journal', 'doc.journal_label', 'doc.doc_ref', 'doc.doc_type', 'doc.warehouse', 'doc.warehouse_ref', 'doc.author', 'doc.validator', 'doc.approver', 'doc.extrafields.field_name'),
 		'Related party' => array('party.name', 'party.address | nl2br', 'party.zip', 'party.town', 'party.country', 'party.email', 'party.phone', 'party.vat_number', 'party.customer_code', 'party.supplier_code', 'party.extrafields.field_name'),
 		'Company' => array('company.name', 'company.logo', 'company.address | nl2br', 'company.zip', 'company.town', 'company.country', 'company.email', 'company.phone', 'company.vat_number'),
-		'Totals' => array('totals.excl_tax | money', 'totals.tax | money', 'totals.incl_tax | money', 'totals.payments | money', 'totals.credit_notes | money', 'totals.deposits | money', 'totals.paid | money', 'totals.balance | money'),
-		'Line (inside loop)' => array('line.ref', 'line.sku', 'line.label', 'line.product_ref', 'line.product_label', 'line.description | nl2br', 'line.note | nl2br', 'line.qty | number', 'line.qty_ordered | number', 'line.qty_shipped | number', 'line.unit', 'line.unit_code', 'line.unit_label', 'line.unit_short_label', 'line.unit_price | money', 'line.discount_percent | number', 'line.vat_rate | number', 'line.total_excl_tax | money', 'line.total_tax | money', 'line.total_incl_tax | money', 'line.date_start | date', 'line.date_end | date', 'line.extrafields.field_name', 'loop.index'),
+		'Totals' => array('totals.excl_tax | money', 'totals.tax | money', 'totals.incl_tax | money', 'totals.payments | money', 'totals.credit_notes | money', 'totals.deposits | money', 'totals.paid | money', 'totals.balance | money', 'totals.debit | money', 'totals.credit | money'),
+		'Line (inside loop)' => array('line.ref', 'line.sku', 'line.label', 'line.product_ref', 'line.product_label', 'line.description | nl2br', 'line.note | nl2br', 'line.qty | number', 'line.qty_ordered | number', 'line.qty_shipped | number', 'line.unit', 'line.unit_code', 'line.unit_label', 'line.unit_short_label', 'line.unit_price | money', 'line.discount_percent | number', 'line.vat_rate | number', 'line.total_excl_tax | money', 'line.total_tax | money', 'line.total_incl_tax | money', 'line.invoice_ref', 'line.party_name', 'line.invoice_total | money', 'line.paid_amount | money', 'line.numero_compte', 'line.label_compte', 'line.subledger_account', 'line.subledger_label', 'line.label_operation', 'line.debit | money', 'line.credit | money', 'line.date_start | date', 'line.date_end | date', 'line.extrafields.field_name', 'loop.index'),
 	);
 
 	if ($doctype === '') return $groups;
@@ -130,7 +130,16 @@ function pfFetchObject($doctype, $id)
 	require_once DOL_DOCUMENT_ROOT.$definition['class_file'];
 	$className = $definition['class_name'];
 	$object = new $className($db);
-	if ($object->fetch((int) $id) <= 0) {
+	if ($doctype === 'accounting_journal') {
+		$result = $object->fetchPerMvt((int) $id);
+		if ($result > 0) $result = $object->fetchAllPerMvt((int) $id);
+		$object->lines = (array) ($object->linesmvt ?? array());
+		$object->id = (int) $id;
+		$object->entity = (int) $conf->entity;
+	} else {
+		$result = $object->fetch((int) $id);
+	}
+	if ($result <= 0 || ($doctype === 'accounting_journal' && empty($object->piece_num))) {
 		throw new DomainException($definition['label'].' tidak ditemukan.');
 	}
 	if (isset($object->entity) && (int) $object->entity !== (int) $conf->entity) {
@@ -144,6 +153,15 @@ function pfObjectChoices($doctype)
 	global $db, $conf;
 	$definition = PrintFormatDoctypeRegistry::get($doctype);
 	$table = MAIN_DB_PREFIX.$definition['table'];
+	if ($doctype === 'accounting_journal') {
+		$sql = 'SELECT piece_num,MAX(ref) AS display_label FROM '.$table.' WHERE entity='.(int) $conf->entity.' GROUP BY piece_num ORDER BY piece_num DESC LIMIT 50';
+		$result = $db->query($sql);
+		$rows = array();
+		while ($result && ($row = $db->fetch_object($result))) {
+			$rows[(int) $row->piece_num] = (string) ($row->display_label ?: 'Jurnal #'.$row->piece_num);
+		}
+		return $rows;
+	}
 	$columns = array();
 	$result = $db->query('SHOW COLUMNS FROM '.$table);
 	if (!$result) {

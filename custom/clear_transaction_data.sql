@@ -123,6 +123,8 @@ TRUNCATE TABLE llx_pi_match;
 TRUNCATE TABLE llx_pi_document_action;
 TRUNCATE TABLE llx_pi_entry;
 TRUNCATE TABLE llx_pi_balance;
+TRUNCATE TABLE llx_cl_override;
+TRUNCATE TABLE llx_cl_check_log;
 
 TRUNCATE TABLE llx_expensereport_det_extrafields;
 TRUNCATE TABLE llx_expensereport_det;

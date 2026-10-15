@@ -126,6 +126,8 @@ try {
 	fails(function () use ($pi, $user) { $pi->recordDocumentAction('shipment', 1, 'SHIP-TEST', 'amend', 'no', $user); }, 'Document action requires a meaningful reason');
 	$pi->recordDocumentAction('shipment', 1, 'SHIP-TEST', 'amend', 'Correction requested by warehouse', $user);
 	check($pi->one('SELECT reason FROM '.$pi->table('pi_document_action').' WHERE element_type='.$pi->str('shipment').' AND fk_element=1')->reason === 'Correction requested by warehouse', 'Document action reason is persisted');
+	$pi->recordDocumentAction('accounting_journal', 77, 'JRN-TEST', 'amend', 'Correction requested by accounting', $user, '{"version":1}');
+	check($pi->one('SELECT snapshot_json FROM '.$pi->table('pi_document_action').' WHERE element_type='.$pi->str('accounting_journal').' AND fk_element=77')->snapshot_json === '{"version":1}', 'Accounting journal revision snapshot is accepted by audit');
 	function nativeMovement($qty, $cost, $origin = 'reception', $product = 1, $warehouse = 1, $originId = 1)
 	{
 		global $db, $user;

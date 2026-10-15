@@ -12,6 +12,8 @@ $id = GETPOSTINT('id');
 $definitions = array(
 	'customer_order' => array('class' => 'Commande', 'right' => array('commande', 'creer'), 'label' => 'Sales Order', 'return' => DOL_URL_ROOT.'/commande/card.php?id='),
 	'supplier_order' => array('class' => 'CommandeFournisseur', 'right' => array('fournisseur', 'commande', 'creer'), 'label' => 'Purchase Order', 'return' => DOL_URL_ROOT.'/fourn/commande/card.php?id='),
+	'customer_invoice' => array('class' => 'Facture', 'right' => array('facture', 'creer'), 'label' => 'Customer Invoice', 'return' => DOL_URL_ROOT.'/compta/facture/card.php?facid='),
+	'supplier_invoice' => array('class' => 'FactureFournisseur', 'right' => array('fournisseur', 'facture', 'creer'), 'label' => 'Vendor Invoice', 'return' => DOL_URL_ROOT.'/fourn/facture/card.php?id='),
 	'customer_payment' => array('class' => 'Paiement', 'right' => array('facture', 'paiement'), 'label' => 'Customer Payment', 'return' => DOL_URL_ROOT.'/compta/paiement/list.php'),
 	'supplier_payment' => array('class' => 'PaiementFourn', 'right' => array('fournisseur', 'facture', 'supprimer'), 'label' => 'Supplier Payment', 'return' => DOL_URL_ROOT.'/fourn/paiement/list.php'),
 );
@@ -33,6 +35,8 @@ function piLifecycleSnapshot($type, $object, $pi)
 	$tables = array(
 		'customer_order' => 'commande',
 		'supplier_order' => 'commande_fournisseur',
+		'customer_invoice' => 'facture',
+		'supplier_invoice' => 'facture_fourn',
 		'customer_payment' => 'paiement',
 		'supplier_payment' => 'paiementfourn',
 	);
@@ -48,6 +52,10 @@ function piLifecycleSnapshot($type, $object, $pi)
 		$lines = $pi->rows('SELECT * FROM '.$pi->table('commandedet').' WHERE fk_commande='.(int) $object->id.' ORDER BY rang,rowid');
 	} elseif ($type === 'supplier_order') {
 		$lines = $pi->rows('SELECT * FROM '.$pi->table('commande_fournisseurdet').' WHERE fk_commande='.(int) $object->id.' ORDER BY rang,rowid');
+	} elseif ($type === 'customer_invoice') {
+		$lines = $pi->rows('SELECT * FROM '.$pi->table('facturedet').' WHERE fk_facture='.(int) $object->id.' ORDER BY rang,rowid');
+	} elseif ($type === 'supplier_invoice') {
+		$lines = $pi->rows('SELECT * FROM '.$pi->table('facture_fourn_det').' WHERE fk_facture_fourn='.(int) $object->id.' ORDER BY rang,rowid');
 	} else {
 		$lines = array();
 	}
@@ -104,6 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 	} else {
 		try {
 			$isPayment = strpos($type, 'payment') !== false;
+			$isInvoice = strpos($type, 'invoice') !== false;
 			$replacementUrl = '';
 			if ($type === 'customer_payment') {
 				$firstInvoice = $pi->one('SELECT fk_facture invoice_id FROM '.$pi->table('paiement_facture').' WHERE fk_paiement='.(int) $object->id.' ORDER BY rowid LIMIT 1');
@@ -112,13 +121,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 				$firstInvoice = $pi->one('SELECT fk_facturefourn invoice_id FROM '.$pi->table('paiementfourn_facturefourn').' WHERE fk_paiementfourn='.(int) $object->id.' ORDER BY rowid LIMIT 1');
 				if ($firstInvoice) $replacementUrl = DOL_URL_ROOT.'/fourn/facture/paiement.php?facid='.(int) $firstInvoice->invoice_id.'&action=create';
 			}
-			$pi->transaction(function () use ($type, $object, $user, $pi, $reason, $isPayment) {
+			$pi->transaction(function () use ($type, $object, $user, $pi, $reason, $isPayment, $isInvoice) {
 				$snapshot = piLifecycleSnapshot($type, $object, $pi);
 				if ($isPayment) {
 					piReopenPaidInvoices($type, $object->id, $pi, $user);
 					$result = $object->delete($user);
 					if ($result <= 0) throw new DomainException($object->error ?: implode('; ', (array) $object->errors));
 					$pi->recordDocumentAction($type, $object->id, $object->ref, 'cancel', $reason, $user, $snapshot);
+					return;
+				}
+				if ($isInvoice) {
+					$pi->reviseInvoiceWithLedger($object, $user);
+					$pi->recordDocumentAction($type, $object->id, $object->ref, 'amend', $reason, $user, $snapshot);
 					return;
 				}
 				piAssertNoActiveChildren($type, $object->id, $pi);
@@ -146,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 	}
 }
 
-piHeader(($type === 'customer_payment' || $type === 'supplier_payment') ? 'Cancel & Recreate '.$definition['label'] : 'Cancel & Amend '.$definition['label']);
+piHeader(($type === 'customer_payment' || $type === 'supplier_payment') ? 'Revisi '.$definition['label'] : 'Cancel & Amend '.$definition['label']);
 print '<div class="fichecenter"><div class="underbanner clearboth"></div><div class="info">Dokumen: <b>'.piEscape($object->ref ?: '#'.$object->id).'</b>. Sistem akan memeriksa dokumen turunan, rekonsiliasi bank, pembayaran, stok, dan ledger melalui aturan native sebelum perubahan dilakukan.</div>';
 print '<form method="post" class="pi-form">';
 piToken('confirm');

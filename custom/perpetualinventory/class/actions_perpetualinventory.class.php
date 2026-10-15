@@ -60,20 +60,67 @@ class ActionsPerpetualInventory
 		print dolGetButtonAction('Lihat alasan pembatalan dan revisi', 'Riwayat Cancel/Revisi', 'default', $url, '', true);
 	}
 
-	private function shipmentSnapshot($shipmentId)
+	/** Render lifecycle controls for a bookkeeping piece without depending on Print Format. */
+	private function printJournalLifecycleButtons($object)
 	{
+		global $conf, $user;
+		$pieceNum = (int) ($object->piece_num ?? GETPOSTINT('piece_num'));
+		if ($pieceNum <= 0) {
+			return;
+		}
+		$sql = 'SELECT MAX(date_validated) date_validated,MAX(date_export) date_export,';
+		$sql .= "SUM(CASE WHEN COALESCE(doc_type,'') NOT IN ('','manual','various') THEN 1 ELSE 0 END) system_lines";
+		$sql .= ' FROM '.$this->db->prefix().'accounting_bookkeeping WHERE entity='.(int) $conf->entity.' AND piece_num='.$pieceNum;
+		$result = $this->db->query($sql);
+		$row = $result ? $this->db->fetch_object($result) : null;
+		if (($user->admin || $user->hasRight('accounting', 'mouvements', 'creer')) && $row && !empty($row->date_validated) && empty($row->date_export) && empty($row->system_lines)) {
+			$url = dol_buildpath('/perpetualinventory/journal_action.php', 1).'?piece_num='.$pieceNum;
+			print dolGetButtonAction('Simpan snapshot dan kembalikan jurnal manual ke Draft untuk direvisi', 'Cancel & Amend', 'default', $url, '', true);
+		} elseif ($user->admin || $user->hasRight('accounting', 'mouvements', 'creer')) {
+			if ($row && !empty($row->system_lines)) {
+				$help = 'Journal otomatis harus direvisi melalui Customer/Vendor Invoice, Shipment, Reception, atau dokumen sumbernya agar ledger tetap konsisten.';
+			} elseif ($row && !empty($row->date_export)) {
+				$help = 'Journal sudah diekspor. Gunakan journal koreksi/reversal pada periode aktif.';
+			} else {
+				$help = 'Journal masih Draft dan dapat langsung diedit tanpa proses Cancel & Amend.';
+			}
+			print dolGetButtonAction($help, 'Cancel & Amend', 'default', '#', '', false);
+		}
+		if ($user->hasRight('perpetualinventory', 'read')) {
+			$url = dol_buildpath('/perpetualinventory/audit.php', 1).'?type=accounting_journal&document_id='.$pieceNum;
+			print dolGetButtonAction('Lihat alasan dan snapshot revisi jurnal', 'Riwayat Cancel/Revisi', 'default', $url, '', true);
+		}
+	}
+
+	private function stockDocumentSnapshot($object)
+	{
+		$isShipment = $object->element === 'shipping';
+		$documentTable = $isShipment ? 'expedition' : 'reception';
+		$document = null;
+		$resql = $this->db->query('SELECT * FROM '.$this->db->prefix().$documentTable.' WHERE rowid='.(int) $object->id);
+		if ($resql) {
+			$document = $this->db->fetch_object($resql);
+		}
 		$lines = array();
-		$resql = $this->db->query('SELECT * FROM '.$this->db->prefix().'expeditiondet WHERE fk_expedition='.(int) $shipmentId.' ORDER BY rang,rowid');
+		$lineTable = $isShipment ? 'expeditiondet' : 'receptiondet_batch';
+		$parentField = $isShipment ? 'fk_expedition' : 'fk_reception';
+		$resql = $this->db->query('SELECT * FROM '.$this->db->prefix().$lineTable.' WHERE '.$parentField.'='.(int) $object->id.' ORDER BY rang,rowid');
 		while ($resql && ($line = $this->db->fetch_object($resql))) {
 			$lineData = get_object_vars($line);
 			$lineData['batches'] = array();
-			$batches = $this->db->query('SELECT * FROM '.$this->db->prefix().'expeditiondet_batch WHERE fk_expeditiondet='.(int) $line->rowid.' ORDER BY rowid');
-			while ($batches && ($batch = $this->db->fetch_object($batches))) {
-				$lineData['batches'][] = get_object_vars($batch);
+			if ($isShipment) {
+				$batches = $this->db->query('SELECT * FROM '.$this->db->prefix().'expeditiondet_batch WHERE fk_expeditiondet='.(int) $line->rowid.' ORDER BY rowid');
+				while ($batches && ($batch = $this->db->fetch_object($batches))) {
+					$lineData['batches'][] = get_object_vars($batch);
+				}
 			}
 			$lines[] = $lineData;
 		}
-		return json_encode(array('version' => 1, 'lines' => $lines), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		$snapshot = json_encode(array('version' => 1, 'document' => $document ? get_object_vars($document) : array(), 'lines' => $lines), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		if ($snapshot === false) {
+			throw new DomainException('Snapshot dokumen stok gagal dibuat.');
+		}
+		return $snapshot;
 	}
 
 	private function canDelete($object, $user)
@@ -102,6 +149,14 @@ class ActionsPerpetualInventory
 	{
 		global $conf, $langs, $user;
 		if (!isModEnabled('perpetualinventory') || (int) $object->id <= 0) {
+			// BookKeeping cards identify a transaction by piece_num and may not
+			// expose a conventional object id.
+			if (!isModEnabled('perpetualinventory') || ($object->element ?? '') !== 'accountingbookkeeping') {
+				return 0;
+			}
+		}
+		if (($object->element ?? '') === 'accountingbookkeeping') {
+			$this->printJournalLifecycleButtons($object);
 			return 0;
 		}
 		if ($this->isStockDocument($object)) {
@@ -133,7 +188,7 @@ class ActionsPerpetualInventory
 			$status = isset($object->status) ? (int) $object->status : (int) $object->statut;
 			if ($isPayment || $status !== 0) {
 				$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
-				print dolGetButtonAction($isPayment ? 'Batalkan payment native dan simpan snapshot untuk dibuat ulang' : 'Kembalikan dokumen ke Draft setelah memastikan tidak ada dokumen turunan aktif', $isPayment ? 'Cancel & Recreate' : 'Cancel & Amend', 'default', $url, '', true);
+				print dolGetButtonAction($isPayment ? 'Batalkan payment native, simpan snapshot audit, lalu buat payment pengganti' : 'Kembalikan dokumen ke Draft setelah memastikan tidak ada dokumen turunan aktif', $isPayment ? 'Revisi Payment' : 'Cancel & Amend', 'default', $url, '', true);
 			}
 			$this->printAuditButton($object);
 			return 0;
@@ -141,11 +196,21 @@ class ActionsPerpetualInventory
 		if (!method_exists($object, 'getVentilExportCompta')) {
 			return 0;
 		}
+		$invoiceType = $this->invoiceType($object);
+		$status = isset($object->status) ? (int) $object->status : (int) $object->statut;
+		if ($status === 0 && (int) $object->type === 0 && $this->canRevise($object, $user)) {
+			$target = $invoiceType === 'supplier' ? 'supplier_invoice' : 'customer_invoice';
+			$source = $invoiceType === 'supplier' ? $langs->trans('Reception') : $langs->trans('Shipment');
+			$url = dol_buildpath('/perpetualinventory/get_invoice_items.php', 1).'?target='.$target.'&destination_id='.(int) $object->id;
+			$label = $langs->trans($invoiceType === 'supplier' ? 'PIGetItemsFromReception' : 'PIGetItemsFromShipment');
+			print dolGetButtonAction($langs->trans('PIGetInvoiceItemsHelp', $source), $label, 'default', $url, '', true);
+		}
 		$idKey = $this->invoiceType($object) === 'supplier' ? 'id' : 'facid';
 		if ($this->canRevise($object, $user) && in_array((int) $object->status, array(1, 3), true)) {
-			$url = $_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id.'&action=pi_revise_ledger&token='.newToken();
-			$params = array('attr' => array('class' => 'classfortooltip', 'title' => 'Batalkan posting buku besar dan kembalikan invoice ke draft'));
-			print dolGetButtonAction('Batalkan posting dan buka invoice untuk direvisi', 'Revisi + Ledger', 'default', $url, '', true, $params);
+			$type = $this->documentType($object);
+			$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
+			$params = array('attr' => array('class' => 'classfortooltip', 'title' => 'Batalkan posting buku besar, simpan snapshot, lalu kembalikan invoice ke Draft'));
+			print dolGetButtonAction('Batalkan posting, simpan snapshot audit, dan buka invoice untuk direvisi', 'Cancel & Amend', 'default', $url, '', true, $params);
 		}
 		if ($this->canDelete($object, $user)) {
 			$url = $_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id.'&action=pi_delete_ledger&token='.newToken();
@@ -247,7 +312,7 @@ class ActionsPerpetualInventory
 				exit;
 			}
 		}
-		if (isModEnabled('perpetualinventory') && in_array($object->element, array('commande', 'order_supplier'), true) && in_array($action, array('cancel', 'confirm_cancel', 'modif', 'confirm_modif'), true)) {
+		if (isModEnabled('perpetualinventory') && in_array($object->element, array('commande', 'order_supplier'), true) && in_array($action, array('cancel', 'confirm_cancel', 'modif', 'confirm_modif', 'reopen'), true)) {
 			$type = $this->documentType($object);
 			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
 			exit;
@@ -257,9 +322,10 @@ class ActionsPerpetualInventory
 			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
 			exit;
 		}
-		if (isModEnabled('perpetualinventory') && in_array($object->element, array('facture', 'facture_fourn', 'invoice', 'invoice_supplier'), true) && in_array($action, array('modif', 'confirm_modif'), true)) {
-			$action = 'pi_revise_ledger';
-			return 0;
+		if (isModEnabled('perpetualinventory') && in_array($object->element, array('facture', 'facture_fourn', 'invoice', 'invoice_supplier'), true) && in_array($action, array('modif', 'confirm_modif', 'edit', 'confirm_edit', 'canceled', 'confirm_canceled'), true) && (int) $object->status !== 0) {
+			$type = $this->documentType($object);
+			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
+			exit;
 		}
 		if (isModEnabled('perpetualinventory') && $object->element === 'shipping') {
 			// A confirmation page opened before this module update may still post
@@ -296,8 +362,8 @@ class ActionsPerpetualInventory
 					throw new DomainException('Alasan pembatalan/revisi wajib diisi minimal 5 karakter.');
 				}
 				$pi->transaction(function () use ($action, $object, $user, $pi, $reason) {
+					$snapshot = $this->stockDocumentSnapshot($object);
 					if ($action === 'pi_confirm_cancel_shipment') {
-						$snapshot = $this->shipmentSnapshot($object->id);
 						$result = $object->cancel($user, 0, false);
 						if ($result <= 0 || $object->setStatut(-1) < 0) {
 							throw new DomainException($object->error ?: 'Shipment gagal dibatalkan.');
@@ -313,7 +379,7 @@ class ActionsPerpetualInventory
 					if ($result < 0) {
 						throw new DomainException($object->error ?: 'Dokumen gagal dikembalikan ke Draft.');
 					}
-					$pi->recordDocumentAction($this->documentType($object), $object->id, $object->ref, 'amend', $reason, $user);
+					$pi->recordDocumentAction($this->documentType($object), $object->id, $object->ref, 'amend', $reason, $user, $snapshot);
 				});
 				setEventMessages('Dokumen berhasil diproses. Alasan telah disimpan pada audit trail.', null, 'mesgs');
 				header('Location: '.$_SERVER['PHP_SELF'].'?id='.(int) $object->id);

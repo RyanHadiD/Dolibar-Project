@@ -11,13 +11,13 @@ class modPerpetualInventory extends DolibarrModules
 		$this->family = 'financial';
 		$this->name = 'PerpetualInventory';
 		$this->description = 'Perpetual inventory with moving-average valuation and linked accounting';
-		$this->version = '1.3.0';
+		$this->version = '1.4.3';
 		$this->const_name = 'MAIN_MODULE_PERPETUALINVENTORY';
 		$this->picto = 'stock';
 		$this->phpmin = array(7, 4);
 		$this->need_dolibarr_version = array(24, 0);
 		$this->depends = array('modStock', 'modAccounting', 'modReception', 'modExpedition');
-		$this->module_parts = array('triggers' => 1, 'hooks' => array('invoicecard', 'invoicesuppliercard', 'expeditioncard', 'expeditionlist', 'receptioncard', 'receptionlist', 'ordercard', 'ordersuppliercard', 'paymentcard', 'supplierpaymentcard'));
+		$this->module_parts = array('triggers' => 1, 'hooks' => array('invoicecard', 'invoicesuppliercard', 'expeditioncard', 'expeditionlist', 'receptioncard', 'receptionlist', 'ordercard', 'ordersuppliercard', 'paymentcard', 'supplierpaymentcard', 'bookkeepingcard'));
 		$this->config_page_url = array('setup.php@perpetualinventory');
 		$this->langfiles = array('perpetualinventory@perpetualinventory');
 		$this->dirs = array();

@@ -75,6 +75,7 @@ $oldOutput = $conf->facture->dir_output;
 $hadMultiOutput = isset($conf->facture->multidir_output[$conf->entity]);
 $oldMultiOutput = $hadMultiOutput ? $conf->facture->multidir_output[$conf->entity] : null;
 $file = '';
+$supplierInvoice = null;
 
 try {
 	if (!mkdir($temporaryRoot, 0700, true)) {
@@ -83,12 +84,14 @@ try {
 	$conf->facture->dir_output = $temporaryRoot;
 	$conf->facture->multidir_output[$conf->entity] = $temporaryRoot;
 	$generator = new PrintFormatDocumentGenerator($db);
+	$repository = new PrintFormat($db, $conf->entity);
+	$invoiceFormat = $repository->getDefault('invoice');
 	$result = $generator->write($invoice, $langs, 'invoice');
 	if ($result <= 0) {
 		throw new RuntimeException('PDF generator failed: '.$generator->error);
 	}
 	$file = $generator->result['fullpath'];
-	$expectedFile = $temporaryRoot.'/'.$invoice->ref.'/'.$invoice->ref.' - Invoice Standard.pdf';
+	$expectedFile = $temporaryRoot.'/'.$invoice->ref.'/'.$invoice->ref.' - '.dol_sanitizeFileName($invoiceFormat->name).'.pdf';
 	if ($file !== $expectedFile) {
 		throw new RuntimeException('PDF filename does not contain the document reference and print format name.');
 	}
@@ -143,9 +146,11 @@ try {
 			unset($conf->supplier_invoice->multidir_output[$conf->entity]);
 		}
 	}
-	$supplierDirectory = $temporaryRoot.'/1/1/'.$supplierInvoice->ref;
-	if (is_dir($supplierDirectory)) {
-		rmdir($supplierDirectory);
+	if ($supplierInvoice) {
+		$supplierDirectory = $temporaryRoot.'/1/1/'.$supplierInvoice->ref;
+		if (is_dir($supplierDirectory)) {
+			rmdir($supplierDirectory);
+		}
 	}
 	if (is_dir($temporaryRoot.'/1/1')) {
 		rmdir($temporaryRoot.'/1/1');

@@ -12,7 +12,7 @@ class modPrintFormat extends DolibarrModules
 		$this->family = 'technic';
 		$this->name = 'PrintFormat';
 		$this->description = 'HTML and CSS print formats for Dolibarr documents';
-		$this->version = '0.5.1';
+		$this->version = '0.6.1';
 		$this->const_name = 'MAIN_MODULE_PRINTFORMAT';
 		$this->picto = 'file-pdf';
 		$this->phpmin = array(7, 4);
@@ -51,6 +51,7 @@ class modPrintFormat extends DolibarrModules
 		require_once DOL_DOCUMENT_ROOT.'/custom/printformat/class/printformat.class.php';
 		require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
 		foreach (PrintFormatDoctypeRegistry::all() as $definition) {
+			if (empty($definition['register_model'])) continue;
 			$sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX."document_model WHERE nom='printformat' AND type='".$this->db->escape($definition['model_type'])."' AND entity=".((int) $conf->entity);
 			$resql = $this->db->query($sql);
 			if (!$resql || !$this->db->fetch_object($resql)) {
@@ -90,6 +91,7 @@ class modPrintFormat extends DolibarrModules
 		require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
 		require_once DOL_DOCUMENT_ROOT.'/custom/printformat/class/printformat.class.php';
 		foreach (PrintFormatDoctypeRegistry::all() as $definition) {
+			if (empty($definition['register_model'])) continue;
 			delDocumentModel('printformat', $definition['model_type']);
 		}
 		return $this->_remove(array(), $options);
