@@ -6,6 +6,12 @@ Exposure adalah invoice outstanding ditambah sisa nilai Sales Order tervalidasi 
 
 Dokumen yang melanggar kebijakan mode `block` memerlukan approval sekali pakai dari user dengan permission `approve`. Approval terikat pada tipe, ID, customer, dan nominal dokumen serta memiliki tanggal kedaluwarsa. Semua block, warning, dan override yang terpakai dicatat dalam audit.
 
+## Bukti Customer Order
+
+Setiap Customer Order wajib memiliki bukti dari customer sebelum dapat divalidasi. Pada kartu Customer Order berstatus Draft tersedia form **Unggah Bukti Customer** untuk file PDF, JPG, PNG, atau WebP. File disimpan sebagai dokumen native order dengan prefix `CUSTOMER_PROOF-`, sehingga dapat dilihat dan dikelola dari tab **Dokumen**.
+
+Pengecekan dilakukan pada form validasi dan trigger `ORDER_VALIDATE`. Karena itu, validasi juga tetap ditolak bila dipanggil dari jalur lain selama bukti customer belum tersedia.
+
 ## Pengaturan user bypass
 
 Admin membuka **Credit Control > User Bypass**, lalu mencentang user yang boleh memberi approval. Admin/superadmin selalu memiliki akses. Hak yang dipakai adalah permission native Dolibarr **Approve credit-limit overrides**, sehingga assignment dari halaman ini tetap sinkron dengan halaman permission user dan grup.

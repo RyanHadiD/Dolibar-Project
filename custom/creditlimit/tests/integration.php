@@ -3,9 +3,10 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit; }
 define('NOSESSION', 1);
 require dirname(__DIR__, 3).'/master.inc.php';
 require_once __DIR__.'/../class/creditlimit.class.php';
+require_once __DIR__.'/../class/customerorderproof.class.php';
 
 if ($db->type !== 'mysqli') throw new RuntimeException('Credit Limit fixture requires MariaDB/MySQL.');
-$sourceDb = $db; $prefix = 'cltest_'.bin2hex(random_bytes(5)).'_'; $tables = array(); $checks = 0;
+$sourceDb = $db; $prefix = 'cltest_'.bin2hex(random_bytes(5)).'_'; $tables = array(); $checks = 0; $proofFixture = '';
 class ClFixtureDB extends DoliDBMysqli
 {
 	public $fixturePrefix;
@@ -21,6 +22,14 @@ function clFails($callback, $label) { try { $callback(); } catch (DomainExceptio
 $db = new ClFixtureDB('mysqli', $dolibarr_main_db_host, $dolibarr_main_db_user, $dolibarr_main_db_pass, $dolibarr_main_db_name, $dolibarr_main_db_port);
 $db->fixturePrefix = $prefix; $db->prefix_db = $prefix;
 try {
+	$proofFixture = sys_get_temp_dir().'/clproof_'.bin2hex(random_bytes(8));
+	if (!mkdir($proofFixture, 0700)) throw new RuntimeException('Unable to create proof fixture directory');
+	file_put_contents($proofFixture.'/generated-order.pdf', 'not a proof');
+	file_put_contents($proofFixture.'/CUSTOMER_PROOF-empty.pdf', '');
+	clCheck(CustomerOrderProof::filesInDirectory($proofFixture) === array(), 'Generated and empty documents do not satisfy proof requirement');
+	file_put_contents($proofFixture.'/CUSTOMER_PROOF-customer-po.pdf', 'fixture proof');
+	clCheck(CustomerOrderProof::filesInDirectory($proofFixture) === array('CUSTOMER_PROOF-customer-po.pdf'), 'Non-empty prefixed customer document satisfies proof requirement');
+
 	foreach (array('societe','commande','facture','element_element','user') as $name) {
 		$target=$prefix.$name; if(!$sourceDb->query('CREATE TABLE '.$target.' LIKE '.MAIN_DB_PREFIX.$name)) throw new RuntimeException($sourceDb->lasterror()); $tables[]=$target;
 	}
@@ -65,5 +74,9 @@ try {
 	echo 'PASS: '.$checks." Credit Limit integration assertions\n";
 } finally {
 	foreach(array_reverse($tables) as $table){ if(strpos($table,$prefix)!==0||!preg_match('/^cltest_[a-f0-9]+_[a-z0-9_]+$/',$table)) throw new RuntimeException('Unsafe fixture cleanup'); $sourceDb->query('DROP TABLE IF EXISTS '.$table); }
+	if ($proofFixture && is_dir($proofFixture) && strpos(basename($proofFixture), 'clproof_') === 0) {
+		foreach (scandir($proofFixture) as $proofFile) { if ($proofFile !== '.' && $proofFile !== '..' && is_file($proofFixture.'/'.$proofFile)) unlink($proofFixture.'/'.$proofFile); }
+		rmdir($proofFixture);
+	}
 	$db->close(); $sourceDb->close();
 }

@@ -11,7 +11,7 @@ class modCreditLimit extends DolibarrModules
 		$this->family = 'financial';
 		$this->name = 'CreditLimit';
 		$this->description = 'Customer credit exposure, overdue controls and audited overrides';
-		$this->version = '1.1.0';
+		$this->version = '1.2.0';
 		$this->const_name = 'MAIN_MODULE_CREDITLIMIT';
 		$this->picto = 'payment';
 		$this->phpmin = array(7, 4);

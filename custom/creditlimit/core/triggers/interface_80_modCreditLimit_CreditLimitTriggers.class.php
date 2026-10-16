@@ -1,6 +1,7 @@
 <?php
 require_once DOL_DOCUMENT_ROOT.'/core/triggers/dolibarrtriggers.class.php';
 require_once __DIR__.'/../../class/creditlimit.class.php';
+require_once __DIR__.'/../../class/customerorderproof.class.php';
 
 class InterfaceCreditLimitTriggers extends DolibarrTriggers
 {
@@ -18,6 +19,10 @@ class InterfaceCreditLimitTriggers extends DolibarrTriggers
 	{
 		if (!isModEnabled('creditlimit') || !in_array($action, array('ORDER_VALIDATE', 'SHIPPING_VALIDATE', 'BILL_VALIDATE'), true)) return 0;
 		try {
+			if ($action === 'ORDER_VALIDATE' && !(new CustomerOrderProof($this->db))->hasProof($object)) {
+				$langs->load('creditlimit@creditlimit');
+				throw new DomainException($langs->trans('CLProofRequiredForValidation'));
+			}
 			(new CreditLimitService($this->db, $conf->entity))->enforce($object, $user);
 			return 0;
 		} catch (Throwable $e) {
