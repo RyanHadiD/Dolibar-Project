@@ -114,6 +114,7 @@ function piGeneralLedgerVoucherLink($row)
 		'supplier_invoice' => '/fourn/facture/card.php?facid=',
 		'reception' => '/reception/card.php?id=',
 		'shipment' => '/expedition/card.php?id=',
+		'stock_entry' => '/custom/perpetualinventory/stockentry_card.php?id=',
 		'bank' => '/compta/bank/line.php?rowid=',
 		'expense_report' => '/expensereport/card.php?id=',
 		'loan' => '/loan/card.php?id=',

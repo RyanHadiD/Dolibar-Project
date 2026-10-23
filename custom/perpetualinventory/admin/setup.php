@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__.'/../lib/common.php';
+require_once __DIR__.'/../class/pistockentry.class.php';
+require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
 if (!$user->admin) {
 	accessforbidden();
 }
@@ -14,10 +16,14 @@ if ($action) {
 				$data[$field] = GETPOST($field, 'alphanohtml');
 			}
 			$data['lock_date'] = GETPOST('lock_date', 'alphanohtml');
+			$numberMask = PiStockEntry::validateNumberMask(GETPOST('stockentry_number_mask', 'alphanohtml'));
 			if ($data['lock_date'] && (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $data['lock_date']) || date('Y-m-d', strtotime($data['lock_date'])) !== $data['lock_date'] || $data['lock_date'] > date('Y-m-d'))) {
 				throw new DomainException('Tanggal kunci tidak valid atau di masa depan.');
 			}
 			$pi->saveConfig($data, $user);
+			if (dolibarr_set_const($db, 'PI_STOCKENTRY_NUMBER_MASK', $numberMask, 'chaine', 0, 'Stock Entry numbering mask', $conf->entity) <= 0) {
+				throw new RuntimeException('Format nomor Stock Entry gagal disimpan.');
+			}
 		} elseif ($action === 'opening') {
 			$pi->opening(GETPOSTINT('product'), GETPOSTINT('warehouse'), piNumber('cost'), GETPOST('opening_mode', 'alpha') === 'adopt', $user);
 		} elseif ($action === 'start') {
@@ -67,7 +73,12 @@ foreach (array('stock_account' => 'Akun aset persediaan', 'grni_account' => 'Bar
 }
 print '<label for="journal_code">Jurnal persediaan</label>';
 piSelect('journal_code', $journals, $c->journal_code ?? '');
-print '<label for="lock_date">Kunci transaksi sampai tanggal (inklusif)</label><input id="lock_date" type="date" name="lock_date" value="'.piEscape($c->lock_date ?? '').'"><br><button class="button" type="submit">Simpan pengaturan</button></form>';
+$numberMask = getDolGlobalString('PI_STOCKENTRY_NUMBER_MASK') ?: PiStockEntry::DEFAULT_NUMBER_MASK;
+$numberPreview = PiStockEntry::formatReference($numberMask, 123, dol_now());
+print '<label for="lock_date">Kunci transaksi sampai tanggal (inklusif)</label><input id="lock_date" type="date" name="lock_date" value="'.piEscape($c->lock_date ?? '').'">';
+print '<label for="stockentry_number_mask">Format nomor Stock Entry</label><input class="minwidth300" id="stockentry_number_mask" name="stockentry_number_mask" maxlength="50" required value="'.piEscape($numberMask).'">';
+print '<p class="pi-muted">Token: {YYYY}, {YY}, {MM}, {DD}, dan {ID:n} untuk nomor urut berbasis ID dengan n digit. Contoh hasil: <strong>'.piEscape($numberPreview).'</strong>. Perubahan hanya berlaku untuk dokumen baru.</p>';
+print '<br><button class="button" type="submit">Simpan pengaturan</button></form>';
 if (!$c || !$c->enabled) {
 	list($products, $warehouses) = piMasters();
 	$openingRows = $pi->rows('SELECT ps.fk_product,ps.fk_entrepot,p.ref product_ref,p.label product_label,w.ref warehouse_ref,ps.reel native_qty,p.pmp,COALESCE(b.qty,0) ledger_qty,COALESCE(b.stock_value,0) ledger_value FROM '.$pi->table('product_stock').' ps JOIN '.$pi->table('product').' p ON p.rowid=ps.fk_product JOIN '.$pi->table('entrepot').' w ON w.rowid=ps.fk_entrepot LEFT JOIN '.$pi->table('pi_balance').' b ON b.entity='.$pi->entity.' AND b.fk_product=ps.fk_product AND b.fk_warehouse=ps.fk_entrepot WHERE p.entity='.$pi->entity.' AND w.entity='.$pi->entity.' AND p.fk_product_type=0 AND p.stockable_product=1 AND ABS(ps.reel)>0.00000001 ORDER BY p.ref,w.ref');

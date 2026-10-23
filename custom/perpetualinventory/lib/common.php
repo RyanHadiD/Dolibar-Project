@@ -27,11 +27,13 @@ function piUrl($path)
 
 function piHeader($title)
 {
-	llxHeader('', $title, '', '', 0, 0, array(), array('/perpetualinventory/css/perpetualinventory.css?v=0.9.0'));
+	llxHeader('', $title, '', '', 0, 0, array(), array('/perpetualinventory/css/perpetualinventory.css?v=1.6.0'));
 	print load_fiche_titre($title, '', 'stock');
 	print '<nav class="pi-nav">';
 	$page = basename($_SERVER['SCRIPT_NAME']);
-	if ($page === 'dailyreport.php') {
+	if (in_array($page, array('stockentry_list.php', 'stockentry_card.php'), true)) {
+		$links = array('stockentry_list.php' => 'Stock Entry List', 'stockentry_card.php?action=create' => 'New Stock Entry');
+	} elseif ($page === 'dailyreport.php') {
 		$links = array(
 			'dailyreport.php?report=ar-summary' => 'Accounts Receivable Summary',
 			'dailyreport.php?report=ap-summary' => 'Accounts Payable Summary',
@@ -43,7 +45,7 @@ function piHeader($title)
 	} elseif (in_array($page, array('ledger.php', 'stockbalance.php'), true)) {
 		$links = array('ledger.php' => 'Stock Ledger', 'stockbalance.php' => 'Stock Balance');
 	} else {
-		$links = array('index.php' => 'Ringkasan', 'operations.php' => 'Operasi stok', 'matching.php' => 'Pencocokan tagihan', 'reconcile.php' => 'Rekonsiliasi', 'audit.php' => 'Riwayat Cancel/Revisi', 'admin/setup.php' => 'Pengaturan');
+		$links = array('index.php' => 'Ringkasan', 'matching.php' => 'Pencocokan tagihan', 'reconcile.php' => 'Rekonsiliasi', 'audit.php' => 'Riwayat Cancel/Revisi', 'admin/setup.php' => 'Pengaturan');
 	}
 	foreach ($links as $path => $label) {
 		print '<a href="'.piEscape(piUrl($path)).'">'.piEscape($label).'</a>';
@@ -105,7 +107,7 @@ function piQty($value)
 
 function piVoucherLink($entry)
 {
-	$paths = array('reception' => '/reception/card.php?id=', 'shipping' => '/expedition/card.php?id=');
+	$paths = array('reception' => '/reception/card.php?id=', 'shipping' => '/expedition/card.php?id=', 'pistockentry' => '/perpetualinventory/stockentry_card.php?id=');
 	$label = piEscape($entry->voucher_ref);
 	if (!empty($paths[$entry->origin_type]) && $entry->origin_id) {
 		return '<a href="'.piEscape(DOL_URL_ROOT.$paths[$entry->origin_type].(int) $entry->origin_id).'">'.$label.'</a>';

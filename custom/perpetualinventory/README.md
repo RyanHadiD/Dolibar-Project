@@ -1,5 +1,29 @@
 # Perpetual Inventory untuk Dolibarr 24
 
+Versi 1.6 menambahkan dokumen **Stock Entry multi-item** bernomor dengan status
+Draft dan Posted. Draft dapat disimpan, dibuka kembali, diedit, dan dihapus;
+tombol Validate & Post memposting seluruh item secara atomik ke stok native,
+buku stok, dan jurnal. Satu dokumen dapat memuat sampai 100 baris untuk Material
+Receipt, Material Issue, Material Transfer, Stock Reconciliation/opname,
+penyesuaian, retur, atau pembalik. Setiap baris menyimpan tautan ke Stock Ledger
+yang dihasilkan dan dapat memakai Difference Account tersendiri.
+
+Posting Date dan Posting Time dipilih pada Draft lalu dipertahankan saat
+validasi. Tanggal masa depan, periode terkunci, dan tanggal yang lebih awal dari
+ledger terakhir barang/gudang tetap ditolak. Administrator dapat mengatur seri
+nomor melalui **Perpetual Inventory → Pengaturan → Format nomor Stock Entry**.
+Format bawaan `STE-{YYYY}-{ID:7}`; token yang tersedia adalah `{YYYY}`, `{YY}`,
+`{MM}`, `{DD}`, dan `{ID:n}` (panjang 1–12 digit). Nomor memakai ID database,
+sehingga tetap unik tetapi dapat memiliki lompatan bila Draft dihapus.
+
+Stock Entry sekarang mempunyai menu utama sendiri, terpisah dari menu
+Perpetual Inventory, dengan submenu **Daftar Stock Entry** dan **Stock Entry
+Baru**. Material Receipt, Material Issue, Stock Reconciliation, dan Stock
+Adjustment memakai Difference Account pada masing-masing item sebagai akun
+lawan Persediaan. Material Transfer tidak membuat jurnal GL karena nilai hanya
+berpindah antargudang. Voucher buku stok dan buku besar menggunakan nomor
+`STE-YYYY-xxxxxxx` agar dokumen, item, stock ledger, dan jurnal dapat ditelusuri.
+
 Versi 1.4 menambahkan revisi terkontrol untuk Accounting Journal manual yang
 sudah divalidasi. Journal hanya dapat dibuka kembali jika belum diekspor dan
 bukan hasil posting otomatis dokumen sumber. Alasan wajib dan snapshot lengkap
@@ -7,7 +31,7 @@ sebelum perubahan disimpan dalam Riwayat Cancel/Revisi. Revisi Payment tetap
 memakai alur aman batalkan lalu buat ulang karena Payment native Dolibarr tidak
 memiliki status Draft yang dapat diedit.
 
-Modul versi 1.4.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
+Modul versi 1.6.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
 
 ## Get Items From
 

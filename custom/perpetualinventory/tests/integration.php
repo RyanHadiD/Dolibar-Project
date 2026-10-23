@@ -7,6 +7,7 @@ if (PHP_SAPI !== 'cli') {
 define('NOSESSION', 1);
 require dirname(__DIR__, 3).'/master.inc.php';
 require_once __DIR__.'/../class/perpetualinventory.class.php';
+require_once __DIR__.'/../class/pistockentry.class.php';
 require_once __DIR__.'/../class/pifinancialreport.class.php';
 require_once __DIR__.'/../class/pistockreport.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/stock/class/mouvementstock.class.php';
@@ -269,6 +270,73 @@ try {
 	near($warehouseBalance[0]->balance_qty, 2, 'Stock Balance filtered quantity');
 	$stockLedger = $stockReport->ledger(date('Y-m-01'), date('Y-m-t'), 1, 1);
 	check(count($stockLedger) === 3 && $stockLedger[0]->voucher_ref === 'REC-TEST', 'Stock Ledger chronology and voucher reference');
+	$batchKey = bin2hex(random_bytes(16));
+	$beforeMain = (float) $pi->balance(1, 1)->qty;
+	$beforeSecond = (float) $pi->balance(1, 2)->qty;
+	$batchItems = array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 2, 'qty' => 1),
+		array('product' => 1, 'warehouse' => 2, 'target' => 1, 'qty' => 1),
+	);
+	$batchIds = $pi->operateBatch('material_transfer', $batchItems, 'Round-trip multi item', $batchKey, $user);
+	check(count($batchIds) === 2, 'Multi-item Stock Entry posts every row');
+	near($pi->balance(1, 1)->qty, $beforeMain, 'Multi-item transfer preserves first warehouse balance');
+	near($pi->balance(1, 2)->qty, $beforeSecond, 'Multi-item transfer preserves second warehouse balance');
+	$entriesAfterBatch = (int) $pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n;
+	$pi->operateBatch('material_transfer', $batchItems, 'Round-trip multi item', $batchKey, $user);
+	near($pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n, $entriesAfterBatch, 'Multi-item Stock Entry retry is idempotent');
+	fails(function () use ($pi, $user) {
+		$pi->operateBatch('material_transfer', array(
+			array('product' => 1, 'warehouse' => 1, 'target' => 2, 'qty' => 1),
+			array('product' => 1, 'warehouse' => 2, 'target' => 2, 'qty' => 1),
+		), 'Rollback multi item', bin2hex(random_bytes(16)), $user);
+	}, 'Invalid row rolls back whole multi-item Stock Entry');
+	near($pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n, $entriesAfterBatch, 'Atomic multi-item rollback leaves no partial ledger');
+	$stockEntryService = new PiStockEntry($pi);
+	$maskTimestamp = dol_mktime(12, 0, 0, 5, 6, 2025);
+	check(PiStockEntry::formatReference('ST-{YYYY}{MM}{DD}-{ID:5}', 12, $maskTimestamp) === 'ST-20250506-00012', 'Stock Entry numbering mask expands date and padded ID tokens');
+	fails(function () { PiStockEntry::validateNumberMask('STE-{YYYY}'); }, 'Stock Entry numbering mask requires a unique ID token');
+	$receiptDocumentId = $stockEntryService->saveDraft(0, 'material_receipt', 'Multi item receipt document', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 0, 'qty' => 1, 'cost' => 100000, 'account' => '5100', 'source' => 0, 'note' => 'Main receipt'),
+		array('product' => 1, 'warehouse' => 2, 'target' => 0, 'qty' => 1, 'cost' => 100000, 'account' => '5100', 'source' => 0, 'note' => 'Second receipt'),
+	), $user);
+	$receiptDocument = $stockEntryService->fetch($receiptDocumentId);
+	check(strpos($receiptDocument->ref, 'STE-'.substr($receiptDocument->date_post, 0, 4).'-') === 0 && (int) $receiptDocument->status === 0 && count($receiptDocument->lines) === 2, 'Stock Entry persists as a numbered multi-item Draft');
+	$savedPostingStamp = $receiptDocument->date_post;
+	$pi->postStockEntry($receiptDocumentId, $user);
+	$receiptDocument = $stockEntryService->fetch($receiptDocumentId);
+	check((int) $receiptDocument->status === 1 && $receiptDocument->lines[0]->fk_pi_entry > 0, 'Stock Entry validation links document lines to stock ledger');
+	$postedLedgerDate = $pi->one('SELECT date_post FROM '.$pi->table('pi_entry').' WHERE entity=1 AND rowid='.(int) $receiptDocument->lines[0]->fk_pi_entry)->date_post;
+	check($receiptDocument->date_post === $savedPostingStamp && $postedLedgerDate === $savedPostingStamp, 'Selected Stock Entry date and time are preserved during posting');
+	$stockEntryJournal = $pi->one('SELECT doc_type,doc_ref,numero_compte FROM '.$pi->table('accounting_bookkeeping')." WHERE doc_type='stock_entry' AND fk_doc=".(int) $receiptDocumentId." AND numero_compte='5100' LIMIT 1");
+	check($stockEntryJournal && $stockEntryJournal->doc_ref === $receiptDocument->ref, 'Stock Entry item Difference Account posts under the document voucher');
+	$draftLifecycleId = $stockEntryService->saveDraft(0, 'material_transfer', 'Draft lifecycle original', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 2, 'qty' => 1, 'cost' => null, 'account' => '', 'source' => 0, 'note' => 'Original row'),
+	), $user);
+	$stockEntryService->saveDraft($draftLifecycleId, 'material_transfer', 'Draft lifecycle edited', array(
+		array('product' => 1, 'warehouse' => 2, 'target' => 1, 'qty' => 1, 'cost' => null, 'account' => '', 'source' => 0, 'note' => 'Edited row'),
+	), $user);
+	$draftLifecycle = $stockEntryService->fetch($draftLifecycleId);
+	check($draftLifecycle->note === 'Draft lifecycle edited' && count($draftLifecycle->lines) === 1 && (int) $draftLifecycle->lines[0]->fk_warehouse === 2, 'Stock Entry Draft can be edited without duplicating lines');
+	$stockEntryService->deleteDraft($draftLifecycleId, $user);
+	check(!$pi->one('SELECT rowid FROM '.$pi->table('pi_stock_entry').' WHERE entity=1 AND rowid='.(int) $draftLifecycleId), 'Stock Entry Draft and its lines can be deleted');
+	$invalidDocumentId = $stockEntryService->saveDraft(0, 'material_transfer', 'Invalid atomic document', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 2, 'qty' => 1, 'cost' => null, 'account' => '', 'source' => 0, 'note' => 'Valid first row'),
+		array('product' => 1, 'warehouse' => 2, 'target' => 2, 'qty' => 1, 'cost' => null, 'account' => '', 'source' => 0, 'note' => 'Invalid second row'),
+	), $user);
+	$entriesBeforeInvalidDocument = (int) $pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n;
+	fails(function () use ($pi, $invalidDocumentId, $user) { $pi->postStockEntry($invalidDocumentId, $user); }, 'Invalid persistent Stock Entry cannot be posted');
+	$invalidDocument = $stockEntryService->fetch($invalidDocumentId);
+	check((int) $invalidDocument->status === 0 && !$invalidDocument->lines[0]->fk_pi_entry, 'Failed Stock Entry validation keeps Draft and clears partial ledger links');
+	near($pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n, $entriesBeforeInvalidDocument, 'Failed Stock Entry validation rolls back all stock ledger rows');
+	$stockEntryService->deleteDraft($invalidDocumentId, $user);
+	$issueDocumentId = $stockEntryService->saveDraft(0, 'material_issue', 'Multi item issue document', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 0, 'qty' => 1, 'cost' => null, 'account' => '5100', 'source' => 0, 'note' => 'Main issue'),
+		array('product' => 1, 'warehouse' => 2, 'target' => 0, 'qty' => 1, 'cost' => null, 'account' => '5100', 'source' => 0, 'note' => 'Second issue'),
+	), $user);
+	$pi->postStockEntry($issueDocumentId, $user);
+	near($pi->balance(1, 1)->qty, $beforeMain, 'Posted receipt and issue documents restore main warehouse quantity');
+	near($pi->balance(1, 2)->qty, $beforeSecond, 'Posted receipt and issue documents restore second warehouse quantity');
+	near($pi->reconciliation()['difference'], 0, 'Stock Entry item journals reconcile with stock value');
 	$tomorrow = date('Y-m-d', strtotime('+1 day'));
 	$futureBalance = $stockReport->stockBalance($tomorrow, $tomorrow);
 	near(array_sum(array_map(function ($row) { return (float) $row->opening_value; }, $futureBalance)), 700000, 'Stock Balance opening value before period');

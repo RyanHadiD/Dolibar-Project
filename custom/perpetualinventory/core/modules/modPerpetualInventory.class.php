@@ -11,7 +11,7 @@ class modPerpetualInventory extends DolibarrModules
 		$this->family = 'financial';
 		$this->name = 'PerpetualInventory';
 		$this->description = 'Perpetual inventory with moving-average valuation and linked accounting';
-		$this->version = '1.4.3';
+		$this->version = '1.6.0';
 		$this->const_name = 'MAIN_MODULE_PERPETUALINVENTORY';
 		$this->picto = 'stock';
 		$this->phpmin = array(7, 4);
@@ -27,10 +27,13 @@ class modPerpetualInventory extends DolibarrModules
 			$this->rights[$i] = array($this->numero + $i + 1, $label, 'w', 0, $key);
 		}
 		$this->menu = array();
-		foreach (array('index.php' => 'PIDashboard', 'operations.php' => 'PIOperations', 'matching.php' => 'PIMatching', 'reconcile.php' => 'PIReconcile', 'audit.php' => 'Riwayat Cancel/Revisi', 'admin/setup.php' => 'PISetup') as $url => $title) {
+		foreach (array('index.php' => 'PIDashboard', 'matching.php' => 'PIMatching', 'reconcile.php' => 'PIReconcile', 'audit.php' => 'Riwayat Cancel/Revisi', 'admin/setup.php' => 'PISetup') as $url => $title) {
 			$i = count($this->menu);
 			$this->menu[] = array('fk_menu' => $i ? 'fk_mainmenu=perpetualinventory' : '', 'type' => $i ? 'left' : 'top', 'titre' => $title, 'mainmenu' => 'perpetualinventory', 'leftmenu' => 'pi'.$i, 'url' => '/perpetualinventory/'.$url, 'langs' => 'perpetualinventory@perpetualinventory', 'position' => 1100 + $i, 'enabled' => 'isModEnabled("perpetualinventory")', 'perms' => '$user->hasRight("perpetualinventory", "read")', 'target' => '', 'user' => 0);
 		}
+		$this->menu[] = array('fk_menu' => '', 'type' => 'top', 'titre' => 'PIStockEntry', 'mainmenu' => 'pistockentry', 'leftmenu' => '', 'url' => '/perpetualinventory/stockentry_list.php', 'langs' => 'perpetualinventory@perpetualinventory', 'position' => 1125, 'enabled' => 'isModEnabled("perpetualinventory")', 'perms' => '$user->hasRight("perpetualinventory", "read")', 'target' => '', 'user' => 0);
+		$this->menu[] = array('fk_menu' => 'fk_mainmenu=pistockentry', 'type' => 'left', 'titre' => 'PIStockEntryList', 'mainmenu' => 'pistockentry', 'leftmenu' => 'pistockentrylist', 'url' => '/perpetualinventory/stockentry_list.php', 'langs' => 'perpetualinventory@perpetualinventory', 'position' => 1126, 'enabled' => 'isModEnabled("perpetualinventory")', 'perms' => '$user->hasRight("perpetualinventory", "read")', 'target' => '', 'user' => 0);
+		$this->menu[] = array('fk_menu' => 'fk_mainmenu=pistockentry', 'type' => 'left', 'titre' => 'PIStockEntryNew', 'mainmenu' => 'pistockentry', 'leftmenu' => 'pistockentrynew', 'url' => '/perpetualinventory/stockentry_card.php?action=create', 'langs' => 'perpetualinventory@perpetualinventory', 'position' => 1127, 'enabled' => 'isModEnabled("perpetualinventory")', 'perms' => '$user->hasRight("perpetualinventory", "write")', 'target' => '', 'user' => 0);
 		$this->menu[] = array('fk_menu' => '', 'type' => 'top', 'titre' => 'PIStockReports', 'mainmenu' => 'pistockreports', 'leftmenu' => '', 'url' => '/perpetualinventory/ledger.php', 'langs' => 'perpetualinventory@perpetualinventory', 'position' => 1150, 'enabled' => 'isModEnabled("perpetualinventory")', 'perms' => '$user->hasRight("perpetualinventory", "read")', 'target' => '', 'user' => 0);
 		foreach (array('ledger.php' => 'PILedger', 'stockbalance.php' => 'PIStockBalance') as $url => $title) {
 			$i = count($this->menu);

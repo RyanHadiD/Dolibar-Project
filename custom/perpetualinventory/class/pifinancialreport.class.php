@@ -329,7 +329,7 @@ class PiFinancialReport
 
 	public function voucherTypeLabel($type)
 	{
-		$labels = array('customer_invoice' => 'Customer Invoice', 'supplier_invoice' => 'Supplier Invoice', 'bank' => 'Payment / Bank', 'reception' => 'Reception', 'shipment' => 'Shipment', 'expense_report' => 'Expense Report', 'asset' => 'Asset', 'loan' => 'Loan', 'perpetualinventory' => 'Perpetual Inventory');
+		$labels = array('customer_invoice' => 'Customer Invoice', 'supplier_invoice' => 'Supplier Invoice', 'bank' => 'Payment / Bank', 'reception' => 'Reception', 'shipment' => 'Shipment', 'stock_entry' => 'Stock Entry', 'expense_report' => 'Expense Report', 'asset' => 'Asset', 'loan' => 'Loan', 'perpetualinventory' => 'Perpetual Inventory');
 		return $labels[$type] ?? ucwords(str_replace('_', ' ', (string) $type));
 	}
 

@@ -297,7 +297,7 @@ class PerpetualInventory
 			throw new DomainException('Saldo awal/pergerakan stok belum direkonsiliasi. Posting dibatalkan.');
 		}
 		$postingDate = $this->movementPostingDate($m);
-		return $this->record($c, $b, $ctx['kind'], $m->value, $m->price, $postingDate, 'movement:'.$m->rowid, $ctx['contra'], $user, array('movement' => $m->rowid, 'origin_type' => $m->origintype, 'origin_id' => $m->fk_origin, 'source' => isset($ctx['source']) ? $ctx['source'] : 0, 'forced' => isset($ctx['forced']) ? $ctx['forced'] : null, 'no_gl' => !empty($ctx['no_gl']), 'note' => $m->label, 'allow_historical' => true));
+		return $this->record($c, $b, $ctx['kind'], $m->value, $m->price, $postingDate, 'movement:'.$m->rowid, $ctx['contra'], $user, array('movement' => $m->rowid, 'origin_type' => $m->origintype, 'origin_id' => $m->fk_origin, 'source' => isset($ctx['source']) ? $ctx['source'] : 0, 'forced' => isset($ctx['forced']) ? $ctx['forced'] : null, 'no_gl' => !empty($ctx['no_gl']), 'note' => $m->label, 'allow_historical' => array_key_exists('allow_historical', $ctx) ? (bool) $ctx['allow_historical'] : true));
 	}
 
 	/**
@@ -748,6 +748,15 @@ class PerpetualInventory
 				$fkDocdet = $id;
 				$title = 'Pengiriman barang';
 			}
+		} elseif ($e && $e->origin_type === 'pistockentry' && $e->origin_id) {
+			$source = $this->one('SELECT ref FROM '.$this->table('pi_stock_entry').' WHERE entity='.$this->entity.' AND rowid='.(int) $e->origin_id);
+			if ($source && $source->ref) {
+				$type = 'stock_entry';
+				$ref = $source->ref;
+				$fkDoc = (int) $e->origin_id;
+				$fkDocdet = $id;
+				$title = 'Stock Entry';
+			}
 		}
 		$product = $e && $e->product_ref ? ' — '.$e->product_ref : '';
 		return array('type' => $type, 'ref' => $ref, 'fk_doc' => $fkDoc, 'fk_docdet' => $fkDocdet, 'label' => $ref.' — '.$title.$product.' [PI-'.$id.']');
@@ -939,6 +948,36 @@ class PerpetualInventory
 			throw new DomainException('Tidak memiliki izin posting stok.');
 		}
 		return $this->transaction(function () use ($kind, $product, $warehouse, $qty, $cost, $target, $source, $note, $requestKey, $user) {
+			return $this->operateLocked($kind, $product, $warehouse, $qty, $cost, $target, $source, $note, $requestKey, $user);
+		});
+	}
+
+	/** Post several Stock Entry rows atomically. Every row receives a stable idempotency key. */
+	public function operateBatch($kind, array $items, $note, $requestKey, $user)
+	{
+		if (!$user->hasRight('perpetualinventory', 'write')) {
+			throw new DomainException('Tidak memiliki izin posting stok.');
+		}
+		if (!$items || count($items) > 100) {
+			throw new DomainException('Stock Entry harus memiliki 1 sampai 100 baris item.');
+		}
+		if (!preg_match('/^[a-f0-9]{32}$/', $requestKey)) {
+			throw new DomainException('Kunci permintaan tidak valid. Muat ulang halaman.');
+		}
+		return $this->transaction(function () use ($kind, $items, $note, $requestKey, $user) {
+			$ids = array();
+			foreach (array_values($items) as $index => $item) {
+				$row = array_merge(array('product' => 0, 'warehouse' => 0, 'qty' => 0, 'cost' => null, 'target' => 0, 'source' => 0), $item);
+				$rowKey = md5($requestKey.':'.$index);
+				$ids[] = $this->operateLocked($kind, (int) $row['product'], (int) $row['warehouse'], (float) $row['qty'], $row['cost'] === null ? null : (float) $row['cost'], (int) $row['target'], (int) $row['source'], $note, $rowKey, $user, (string) ($row['account'] ?? ''));
+			}
+			return $ids;
+		});
+	}
+
+	/** Execute one already transaction-protected Stock Entry row. */
+	private function operateLocked($kind, $product, $warehouse, $qty, $cost, $target, $source, $note, $requestKey, $user, $differenceAccount = '', $stockEntryId = 0, $postingDate = null)
+	{
 			$c = $this->config(true);
 			$this->validateConfig($c);
 			if (!$c->enabled) {
@@ -951,6 +990,24 @@ class PerpetualInventory
 			$duplicate = $this->one('SELECT e.rowid FROM '.$this->table('pi_entry').' e JOIN '.$this->table('stock_mouvement').' m ON m.rowid=e.fk_movement WHERE e.entity='.$this->entity.' AND m.inventorycode='.$this->str('PI-'.$requestKey).' LIMIT 1');
 			if ($duplicate) {
 				return $duplicate->rowid;
+			}
+			if ($kind === 'material_receipt') {
+				if ($qty <= 0) {
+					throw new DomainException('Material Receipt membutuhkan jumlah positif.');
+				}
+				$kind = 'adjustment';
+				$note = 'Material Receipt: '.$note;
+			} elseif ($kind === 'material_issue') {
+				if ($qty <= 0) {
+					throw new DomainException('Material Issue membutuhkan jumlah positif.');
+				}
+				$kind = 'adjustment';
+				$qty = -$qty;
+				$cost = null;
+				$note = 'Material Issue: '.$note;
+			} elseif ($kind === 'material_transfer') {
+				$kind = 'transfer';
+				$note = 'Material Transfer: '.$note;
 			}
 			if ($kind === 'count') {
 				if (!is_finite((float) $qty) || $qty < 0) {
@@ -969,6 +1026,18 @@ class PerpetualInventory
 				throw new DomainException('Pilih operasi, jumlah bukan nol, dan alasan transaksi.');
 			}
 			$ctx = array('kind' => $kind, 'contra' => $c->adjustment_account);
+			if ($differenceAccount !== '' && $kind === 'adjustment') {
+				$this->account($differenceAccount);
+				if ($differenceAccount === $c->stock_account) {
+					throw new DomainException('Difference Account tidak boleh sama dengan akun Persediaan.');
+				}
+				$ctx['contra'] = $differenceAccount;
+			}
+			if ($stockEntryId) {
+				$ctx['stock_entry_id'] = (int) $stockEntryId;
+				$ctx['posting_date'] = $postingDate ?: dol_now();
+				$ctx['allow_historical'] = false;
+			}
 			if ($kind === 'opening') {
 				if ($qty <= 0 || $cost === null || !is_finite((float) $cost) || $cost < 0) {
 					throw new DomainException('Saldo awal membutuhkan jumlah positif dan modal per unit nol atau positif.');
@@ -1036,7 +1105,42 @@ class PerpetualInventory
 				$this->nativeMove($product, $target, $qty, $out->unit_cost, $note, $requestKey, $ctx, $user);
 				return $out->rowid;
 			}
-			return $this->nativeMove($product, $warehouse, $qty, $cost, $note, $requestKey, $ctx, $user);
+			$movementId = $this->nativeMove($product, $warehouse, $qty, $cost, $note, $requestKey, $ctx, $user);
+			$entry = $this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_movement='.(int) $movementId);
+			return (int) $entry->rowid;
+	}
+
+	/** Validate and post one persistent Stock Entry document. */
+	public function postStockEntry($documentId, $user)
+	{
+		if (!$user->hasRight('perpetualinventory', 'write')) {
+			throw new DomainException('Tidak memiliki izin memvalidasi Stock Entry.');
+		}
+		return $this->transaction(function () use ($documentId, $user) {
+			$document = $this->one('SELECT * FROM '.$this->table('pi_stock_entry').' WHERE entity='.$this->entity.' AND rowid='.(int) $documentId.' FOR UPDATE');
+			if (!$document || (int) $document->status !== 0) {
+				throw new DomainException('Stock Entry tidak ditemukan atau bukan Draft.');
+			}
+			$lines = $this->rows('SELECT * FROM '.$this->table('pi_stock_entry_line').' WHERE fk_stock_entry='.(int) $documentId.' ORDER BY rang,rowid FOR UPDATE');
+			if (!$lines) {
+				throw new DomainException('Stock Entry belum memiliki item.');
+			}
+			$accountingPurposes = array('material_receipt', 'material_issue', 'count', 'adjustment');
+			$postingDate = $this->db->jdate($document->date_post);
+			$ids = array();
+			foreach ($lines as $index => $line) {
+				if (in_array($document->purpose, $accountingPurposes, true) && trim((string) $line->difference_account) === '') {
+					throw new DomainException('Pilih Difference Account pada item baris '.($index + 1).'.');
+				}
+				$rowKey = md5($document->request_key.':'.$index);
+				$entryId = $this->operateLocked($document->purpose, (int) $line->fk_product, (int) $line->fk_warehouse, (float) $line->qty, $line->unit_cost === null ? null : (float) $line->unit_cost, (int) $line->fk_target_warehouse, (int) $line->fk_source_entry, $document->ref.': '.trim($document->note.' '.$line->note), $rowKey, $user, (string) $line->difference_account, (int) $documentId, $postingDate);
+				$target = $this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_source='.(int) $entryId." AND kind='transfer_in' ORDER BY rowid DESC LIMIT 1");
+				$this->q('UPDATE '.$this->table('pi_stock_entry_line').' SET fk_pi_entry='.(int) $entryId.',fk_pi_entry_target='.(int) ($target ? $target->rowid : 0).' WHERE rowid='.(int) $line->rowid.' AND fk_stock_entry='.(int) $documentId);
+				$ids[] = $entryId;
+			}
+			$validationStamp = $this->db->idate(dol_now());
+			$this->q('UPDATE '.$this->table('pi_stock_entry').' SET status=1,date_valid='.$this->str($validationStamp).',fk_user_valid='.(int) $user->id.' WHERE entity='.$this->entity.' AND rowid='.(int) $documentId);
+			return $ids;
 		});
 	}
 
@@ -1044,12 +1148,12 @@ class PerpetualInventory
 	{
 		require_once DOL_DOCUMENT_ROOT.'/product/stock/class/mouvementstock.class.php';
 		$m = new MouvementStock($this->db);
-		$m->origin_type = 'perpetualinventory';
-		$m->origin_id = 0;
+		$m->origin_type = !empty($ctx['stock_entry_id']) ? 'pistockentry' : 'perpetualinventory';
+		$m->origin_id = !empty($ctx['stock_entry_id']) ? (int) $ctx['stock_entry_id'] : 0;
 		$previous = self::$context;
 		self::$context = $ctx;
 		try {
-			$id = $m->_create($user, (int) $product, (int) $warehouse, (float) $qty, $qty > 0 ? 3 : 2, (float) $cost, $note, 'PI-'.$key, '', 0, 0, '', false, 0, 1);
+			$id = $m->_create($user, (int) $product, (int) $warehouse, (float) $qty, $qty > 0 ? 3 : 2, (float) $cost, $note, 'PI-'.$key, !empty($ctx['posting_date']) ? $ctx['posting_date'] : '', 0, 0, '', false, 0, 1);
 			if ($id <= 0) {
 				throw new DomainException('Pergerakan gagal: '.$m->error.' '.implode('; ', $m->errors));
 			}

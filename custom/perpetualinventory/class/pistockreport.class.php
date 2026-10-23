@@ -29,11 +29,12 @@ class PiStockReport
 		$where = $this->scope($product, $warehouse).' AND e.date_post>='.$this->pi->str($start).' AND e.date_post<'.$this->pi->str($endExclusive);
 		if ($kind !== '') $where .= ' AND e.kind='.$this->pi->str($kind);
 		$sql = 'SELECT e.*,p.ref product_ref,p.label product_label,w.ref warehouse_ref,'.
-			"COALESCE(NULLIF(r.ref,''),NULLIF(s.ref,''),CONCAT('PI-',e.rowid)) voucher_ref ".
+			"COALESCE(NULLIF(r.ref,''),NULLIF(s.ref,''),NULLIF(se.ref,''),CONCAT('PI-',e.rowid)) voucher_ref ".
 			'FROM '.$this->pi->table('pi_entry').' e '.
 			'JOIN '.$this->pi->table('product').' p ON p.rowid=e.fk_product AND p.entity=e.entity '.
 			'JOIN '.$this->pi->table('entrepot').' w ON w.rowid=e.fk_warehouse AND w.entity=e.entity '.
 			'LEFT JOIN '.$this->pi->table('reception')." r ON r.rowid=e.origin_id AND r.entity=e.entity AND e.origin_type='reception' ".
+			'LEFT JOIN '.$this->pi->table('pi_stock_entry')." se ON se.rowid=e.origin_id AND se.entity=e.entity AND e.origin_type='pistockentry' ".
 			'LEFT JOIN '.$this->pi->table('expedition')." s ON s.rowid=e.origin_id AND s.entity=e.entity AND e.origin_type='shipping' ".
 			'WHERE '.$where.' ORDER BY e.date_post,e.rowid';
 		if ($limit > 0) $sql .= $this->pi->db->plimit((int) $limit, max(0, (int) $offset));
