@@ -158,8 +158,15 @@ class PiStockEntry
 		}
 		$this->pi->transaction(function () use ($id) {
 			$document = $this->fetch($id, true);
-			if ((int) $document->status !== 0) {
-				throw new DomainException('Hanya Stock Entry Draft yang dapat dihapus.');
+			if (!in_array((int) $document->status, array(0, 2), true)) {
+				throw new DomainException('Stock Entry Posted harus dibatalkan sebelum dapat dihapus.');
+			}
+			if ((int) $document->status === 2) {
+				$ledger = $this->pi->one('SELECT rowid FROM '.$this->pi->table('pi_entry').' WHERE entity='.$this->pi->entity." AND origin_type='pistockentry' AND origin_id=".(int) $id.' LIMIT 1');
+				$journal = $this->pi->one('SELECT rowid FROM '.$this->pi->table('accounting_bookkeeping').' WHERE entity='.$this->pi->entity." AND doc_type='stock_entry' AND fk_doc=".(int) $id.' LIMIT 1');
+				if ($ledger || $journal) {
+					throw new DomainException('Stock Entry Cancelled masih memiliki ledger/jurnal. Jalankan rekonsiliasi sebelum menghapus.');
+				}
 			}
 			$this->pi->q('DELETE FROM '.$this->pi->table('pi_stock_entry_line').' WHERE fk_stock_entry='.(int) $id);
 			$this->pi->q('DELETE FROM '.$this->pi->table('pi_stock_entry').' WHERE entity='.$this->pi->entity.' AND rowid='.(int) $id);

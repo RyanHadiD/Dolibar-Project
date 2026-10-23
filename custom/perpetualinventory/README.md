@@ -120,6 +120,8 @@ Workflow audit berlaku pada seluruh dokumen transaksi utama: Sales Order, Shipme
 
 Order, Shipment, Reception, dan Invoice menggunakan **Cancel & Amend** untuk kembali ke Draft. Customer Order, Customer Invoice, Purchase Order, dan Vendor Invoice memakai satu halaman konfirmasi yang seragam; snapshot sebelum revisi disimpan dan setiap siklus diberi urutan R1, R2, dan seterusnya pada riwayat. Payment menggunakan **Cancel & Recreate** karena payment Dolibarr tidak memiliki model draft-edit yang setara; alokasi lama dibatalkan secara native, invoice dibuka kembali, audit disimpan, lalu pengguna diarahkan ke formulir payment pengganti. Payment yang sudah direkonsiliasi bank tidak diubah otomatis.
 
+Stock Entry memakai alur **Draft → Posted → Cancelled → Delete**. Cancel membuat gerakan stok lawan, menghapus efek stock ledger dan jurnal GL asal, menghitung ulang moving average transaksi setelahnya, lalu menyimpan alasan dan snapshot pada audit trail. Stock Entry Posted tidak dapat langsung dihapus; dokumen wajib dibatalkan dahulu.
+
 - **Opname:** masukkan jumlah fisik akhir, termasuk nol. Jika lebih tinggi dari stok sistem, isi modal per unit untuk selisih masuk. Jumlah yang sama tidak memerlukan jurnal.
 - **Saldo awal dari nol:** sebelum ada transaksi operasional, gunakan Operasi Stok → Saldo awal. Operasi ini menambah stok dan menjurnal Debit Persediaan / Kredit Penyesuaian Saldo Awal. Setelah Reception, Shipment, penyesuaian, transfer, atau retur pertama, input saldo awal ditutup.
 - **Penyesuaian:** jumlah positif untuk tambah stok, negatif untuk kurangi. Stok keluar memakai Moving Average.

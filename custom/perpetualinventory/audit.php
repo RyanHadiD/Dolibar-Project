@@ -3,7 +3,7 @@ require_once __DIR__.'/lib/common.php';
 
 $type = GETPOST('type', 'alpha');
 $documentId = GETPOSTINT('document_id');
-$allowedTypes = array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment', 'accounting_journal');
+$allowedTypes = array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment', 'accounting_journal', 'stock_entry');
 $where = array('a.entity='.(int) $pi->entity);
 if (in_array($type, $allowedTypes, true)) {
 	$where[] = 'a.element_type='.$pi->str($type);
@@ -16,7 +16,7 @@ $rows = $pi->rows('SELECT a.*,u.login,u.firstname,u.lastname,(SELECT COUNT(*) FR
 piHeader('Riwayat Cancel/Revisi');
 print '<p class="pi-report-intro">Audit alasan pembatalan dan pengembalian dokumen ke Draft. Data mencatat dokumen, pengguna, waktu, aksi, dan alasan yang dimasukkan.</p>';
 print '<form method="get" class="pi-report-filter"><label>Jenis dokumen<select class="flat minwidth200" name="type"><option value="">Semua</option>';
-foreach (array('customer_order' => 'Sales Order', 'supplier_order' => 'Purchase Order', 'shipment' => 'Shipment', 'reception' => 'Reception', 'customer_invoice' => 'Customer Invoice', 'supplier_invoice' => 'Vendor Invoice', 'customer_payment' => 'Customer Payment', 'supplier_payment' => 'Supplier Payment', 'accounting_journal' => 'Accounting Journal') as $value => $label) {
+foreach (array('customer_order' => 'Sales Order', 'supplier_order' => 'Purchase Order', 'shipment' => 'Shipment', 'reception' => 'Reception', 'customer_invoice' => 'Customer Invoice', 'supplier_invoice' => 'Vendor Invoice', 'customer_payment' => 'Customer Payment', 'supplier_payment' => 'Supplier Payment', 'accounting_journal' => 'Accounting Journal', 'stock_entry' => 'Stock Entry') as $value => $label) {
 	print '<option value="'.piEscape($value).'"'.($type === $value ? ' selected' : '').'>'.piEscape($label).'</option>';
 }
 print '</select></label><label>ID dokumen<input class="flat" type="number" min="1" name="document_id" value="'.($documentId ?: '').'"></label><button class="button" type="submit">Tampilkan</button></form>';

@@ -913,7 +913,7 @@ class PerpetualInventory
 
 			foreach ($changedJournals as $change) {
 				list($entry, $delta) = $change;
-				$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity.' AND ((doc_type='.$this->str('perpetualinventory').' AND fk_doc='.(int) $entry->rowid.') OR (doc_type IN ('.$this->str('reception').','.$this->str('shipment').') AND fk_docdet='.(int) $entry->rowid.'))');
+				$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity.' AND ((doc_type='.$this->str('perpetualinventory').' AND fk_doc='.(int) $entry->rowid.') OR (doc_type IN ('.$this->str('reception').','.$this->str('shipment').','.$this->str('stock_entry').') AND fk_docdet='.(int) $entry->rowid.'))');
 				if (abs($delta) > 0.00000001) {
 					$this->postJournal($c, (int) $entry->rowid, $this->db->jdate($entry->date_post), $entry->stock_account, $entry->contra_account, $delta, $entry->kind, $user);
 				}
@@ -935,7 +935,7 @@ class PerpetualInventory
 		if (mb_strlen($reason) < 5) {
 			throw new DomainException('Alasan pembatalan/revisi wajib diisi minimal 5 karakter.');
 		}
-		if (!in_array($elementType, array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment', 'accounting_journal'), true) || !in_array($actionCode, array('cancel', 'amend'), true)) {
+		if (!in_array($elementType, array('customer_order', 'supplier_order', 'shipment', 'reception', 'customer_invoice', 'supplier_invoice', 'customer_payment', 'supplier_payment', 'accounting_journal', 'stock_entry'), true) || !in_array($actionCode, array('cancel', 'amend'), true)) {
 			throw new DomainException('Jenis dokumen atau aksi audit tidak valid.');
 		}
 		$this->q('INSERT INTO '.$this->table('pi_document_action').' (entity,element_type,fk_element,element_ref,action_code,reason,snapshot_json,fk_user,date_action) VALUES ('.$this->entity.','.$this->str($elementType).','.(int) $elementId.','.$this->str($elementRef).','.$this->str($actionCode).','.$this->str(mb_substr($reason, 0, 1000)).','.($snapshot !== null ? $this->str($snapshot) : 'NULL').','.(int) $user->id.','.$this->str($this->db->idate(dol_now())).')');
@@ -1141,6 +1141,97 @@ class PerpetualInventory
 			$validationStamp = $this->db->idate(dol_now());
 			$this->q('UPDATE '.$this->table('pi_stock_entry').' SET status=1,date_valid='.$this->str($validationStamp).',fk_user_valid='.(int) $user->id.' WHERE entity='.$this->entity.' AND rowid='.(int) $documentId);
 			return $ids;
+		});
+	}
+
+	/** Cancel a posted Stock Entry and remove its PI/GL effect atomically. */
+	public function cancelStockEntry($documentId, $reason, $user)
+	{
+		if (!$user->hasRight('perpetualinventory', 'write')) {
+			throw new DomainException('Tidak memiliki izin membatalkan Stock Entry.');
+		}
+		$reason = trim((string) $reason);
+		if (mb_strlen($reason) < 5) {
+			throw new DomainException('Alasan pembatalan wajib diisi minimal 5 karakter.');
+		}
+		return $this->transaction(function () use ($documentId, $reason, $user) {
+			$document = $this->one('SELECT * FROM '.$this->table('pi_stock_entry').' WHERE entity='.$this->entity.' AND rowid='.(int) $documentId.' FOR UPDATE');
+			if (!$document || (int) $document->status !== 1) {
+				throw new DomainException('Stock Entry tidak ditemukan atau bukan berstatus Posted.');
+			}
+			$lines = $this->rows('SELECT * FROM '.$this->table('pi_stock_entry_line').' WHERE fk_stock_entry='.(int) $documentId.' ORDER BY rang,rowid FOR UPDATE');
+			$entryIds = array();
+			foreach ($lines as $line) {
+				if ((int) $line->fk_pi_entry > 0) $entryIds[] = (int) $line->fk_pi_entry;
+				if ((int) $line->fk_pi_entry_target > 0) $entryIds[] = (int) $line->fk_pi_entry_target;
+			}
+			$entryIds = array_values(array_unique($entryIds));
+			if (!$entryIds) {
+				throw new DomainException('Ledger Stock Entry tidak ditemukan; pembatalan dihentikan agar stok tetap aman.');
+			}
+			$idList = implode(',', array_map('intval', $entryIds));
+			$entries = $this->rows('SELECT * FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND rowid IN ('.$idList.') ORDER BY rowid DESC FOR UPDATE');
+			if (count($entries) !== count($entryIds)) {
+				throw new DomainException('Sebagian ledger Stock Entry tidak ditemukan; jalankan rekonsiliasi sebelum membatalkan.');
+			}
+			$c = $this->config(true);
+			$this->validateConfig($c);
+			$this->validateWorkflow();
+			foreach ($entries as $entry) {
+				if ($c->lock_date && substr($entry->date_post, 0, 10) <= $c->lock_date) {
+					throw new DomainException('Stock Entry berada pada periode stok yang sudah dikunci.');
+				}
+			}
+			$child = $this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_source IN ('.$idList.') AND rowid NOT IN ('.$idList.') LIMIT 1');
+			if ($child) {
+				throw new DomainException('Stock Entry memiliki retur/pembalik lanjutan. Batalkan transaksi turunannya terlebih dahulu.');
+			}
+			if ($this->one('SELECT rowid FROM '.$this->table('pi_match').' WHERE entity='.$this->entity.' AND fk_entry IN ('.$idList.') LIMIT 1')) {
+				throw new DomainException('Stock Entry sudah dipakai dalam pencocokan invoice. Batalkan pencocokan tersebut terlebih dahulu.');
+			}
+			if ($this->one('SELECT rowid FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity." AND doc_type='stock_entry' AND fk_doc=".(int) $documentId.' AND date_export IS NOT NULL LIMIT 1')) {
+				throw new DomainException('Jurnal Stock Entry sudah diekspor dan tidak dapat dibatalkan. Buat jurnal koreksi pada periode aktif.');
+			}
+			$pairs = array();
+			foreach ($entries as $entry) {
+				$key = (int) $entry->fk_product.':'.(int) $entry->fk_warehouse;
+				$pairs[$key] = array('product' => (int) $entry->fk_product, 'warehouse' => (int) $entry->fk_warehouse);
+			}
+			foreach ($pairs as $pair) {
+				$native = $this->one('SELECT reel FROM '.$this->table('product_stock').' WHERE fk_product='.$pair['product'].' AND fk_entrepot='.$pair['warehouse'].' FOR UPDATE');
+				$balance = $this->one('SELECT qty FROM '.$this->table('pi_balance').' WHERE entity='.$this->entity.' AND fk_product='.$pair['product'].' AND fk_warehouse='.$pair['warehouse'].' FOR UPDATE');
+				if (abs((float) ($native ? $native->reel : 0) - (float) ($balance ? $balance->qty : 0)) > 0.0000001) {
+					throw new DomainException('Stok native dan buku stok belum rekonsiliasi; pembatalan dihentikan.');
+				}
+			}
+			$snapshot = json_encode(array('version' => 1, 'document' => get_object_vars($document), 'lines' => array_map('get_object_vars', $lines), 'ledger' => array_map('get_object_vars', $entries)), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+			if ($snapshot === false) {
+				throw new DomainException('Snapshot Stock Entry gagal dibuat.');
+			}
+			require_once DOL_DOCUMENT_ROOT.'/product/stock/class/mouvementstock.class.php';
+			$previous = self::$context;
+			self::$context = array('skip_ledger' => true);
+			try {
+				foreach ($entries as $entry) {
+					$movement = new MouvementStock($this->db);
+					$movement->origin_type = 'pistockentry';
+					$movement->origin_id = (int) $documentId;
+					$qty = -(float) $entry->qty;
+					$movementId = $movement->_create($user, (int) $entry->fk_product, (int) $entry->fk_warehouse, $qty, $qty > 0 ? 3 : 2, (float) $entry->unit_cost, 'Cancel '.$document->ref.': '.$reason, 'PI-CANCEL-'.$documentId.'-'.$entry->rowid, '', 0, 0, '', false, 0, 1);
+					if ($movementId <= 0) {
+						throw new DomainException('Pembalikan stok gagal: '.$movement->error.' '.implode('; ', (array) $movement->errors));
+					}
+				}
+			} finally {
+				self::$context = $previous;
+			}
+			$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity." AND doc_type='stock_entry' AND fk_doc=".(int) $documentId);
+			$this->q('DELETE FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND rowid IN ('.$idList.')');
+			$this->q('UPDATE '.$this->table('pi_stock_entry_line').' SET fk_pi_entry=0,fk_pi_entry_target=0 WHERE fk_stock_entry='.(int) $documentId);
+			$this->recalculateValuation($user, false, true);
+			$this->q('UPDATE '.$this->table('pi_stock_entry').' SET status=2 WHERE entity='.$this->entity.' AND rowid='.(int) $documentId);
+			$this->recordDocumentAction('stock_entry', (int) $documentId, $document->ref, 'cancel', $reason, $user, $snapshot);
+			return count($entries);
 		});
 	}
 

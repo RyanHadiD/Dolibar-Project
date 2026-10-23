@@ -27,7 +27,7 @@ function piUrl($path)
 
 function piHeader($title)
 {
-	llxHeader('', $title, '', '', 0, 0, array(), array('/perpetualinventory/css/perpetualinventory.css?v=1.6.0'));
+	llxHeader('', $title, '', '', 0, 0, array(), array('/perpetualinventory/css/perpetualinventory.css?v=1.6.0-stockentry2'));
 	print load_fiche_titre($title, '', 'stock');
 	print '<nav class="pi-nav">';
 	$page = basename($_SERVER['SCRIPT_NAME']);
