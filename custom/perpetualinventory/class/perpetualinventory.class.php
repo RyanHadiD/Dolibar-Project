@@ -636,6 +636,20 @@ class PerpetualInventory
 			$result = $invoice->delete($user);
 			if ($result <= 0) {
 				$message = $invoice->error ?: implode('; ', (array) $invoice->errors);
+				if (!$message && method_exists($invoice, 'is_erasable')) {
+					$reason = (int) $invoice->is_erasable();
+					$refusals = array(
+						0 => 'penghapusan invoice dinonaktifkan oleh konfigurasi',
+						-1 => 'invoice masih memiliki jurnal akuntansi',
+						-2 => 'invoice bukan nomor terakhir pada seri dan periode yang sama',
+						-3 => 'invoice bukan dokumen terakhir dalam siklus situation invoice',
+						-4 => 'invoice masih memiliki pembayaran',
+						-5 => 'invoice sudah pernah dikirim melalui email',
+						-6 => 'invoice sudah pernah dicetak melalui POS',
+						-7 => 'penghapusan tidak diizinkan pada mode akuntansi tersertifikasi',
+					);
+					if (isset($refusals[$reason])) $message = $refusals[$reason];
+				}
 				throw new DomainException('Invoice gagal dihapus'.($message ? ': '.$message : '.'));
 			}
 			return $result;

@@ -162,10 +162,10 @@ class ActionsPerpetualInventory
 		if ($this->isStockDocument($object)) {
 			$module = $object->element === 'shipping' ? 'expedition' : 'reception';
 			$status = isset($object->status) ? (int) $object->status : (int) $object->statut;
-			// Importing source lines is an edit of the current draft.  Do not show
-			// this action on validated documents, and pass the current Reception so
-			// the picker adds items here instead of opening another new document.
-			if ($object->element === 'reception' && $status === 0 && ($user->admin || $user->hasRight($module, 'creer'))) {
+			// Importing source lines is an edit of the current draft. Do not show
+			// this action on validated documents; pass the current document so the
+			// picker adds items here instead of opening another new document.
+			if ($status === 0 && ($user->admin || $user->hasRight($module, 'creer'))) {
 				$target = $object->element === 'shipping' ? 'shipment' : 'reception';
 				$source = $target === 'shipment' ? $langs->trans('CustomerOrder') : $langs->trans('SupplierOrder');
 				$url = dol_buildpath('/perpetualinventory/get_items_from.php', 1).'?target='.$target.'&destination_id='.(int) $object->id;

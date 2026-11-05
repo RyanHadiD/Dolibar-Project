@@ -1,0 +1,11 @@
+ModuleNamingSeriesName=Naming Series
+ModuleNamingSeriesDesc=Flexible document naming series with period-scoped counters
+NSNamingSeries=Naming Series
+NSSeries=Series
+NSCurrentCounter=Current Counter
+NSRenumberDocuments=Renumber Documents
+NSAudit=Audit
+NSSetup=Setup
+NSOrderNumberingDescription=Flexible Sales Order naming series managed by the Naming Series module.
+NSGenericNumberingDescription=Flexible document numbering managed by the Naming Series module.
+NoActiveNamingSeries=No active Naming Series is configured.

@@ -5,6 +5,8 @@
 require '../../main.inc.php';
 require_once DOL_DOCUMENT_ROOT.'/core/class/html.form.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/class/html.formproduct.class.php';
+require_once DOL_DOCUMENT_ROOT.'/expedition/class/expedition.class.php';
+require_once DOL_DOCUMENT_ROOT.'/commande/class/commande.class.php';
 require_once DOL_DOCUMENT_ROOT.'/reception/class/reception.class.php';
 require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.commande.class.php';
 
@@ -42,8 +44,15 @@ $destination = null;
 
 if ($destinationId > 0) {
 	if ($isShipment) {
-		setEventMessages($langs->trans('PINotAvailableForExistingShipment'), null, 'warnings');
-		$destinationId = 0;
+		$destination = new Expedition($db);
+		if ($destination->fetch($destinationId) <= 0 || (int) $destination->entity !== (int) $conf->entity) {
+			accessforbidden();
+		}
+		if ((int) $destination->status !== Expedition::STATUS_DRAFT) {
+			setEventMessages($langs->trans('PIShipmentImportDraftOnly'), null, 'errors');
+			$destinationId = 0;
+			$destination = null;
+		}
 	} else {
 		$destination = new Reception($db);
 		if ($destination->fetch($destinationId) <= 0 || (int) $destination->entity !== (int) $conf->entity) {
@@ -56,6 +65,30 @@ if ($destinationId > 0) {
 		}
 	}
 }
+
+$getShipmentLines = function ($salesOrderId) use ($db, $movementEntitySql, $stockServices) {
+	$lineCondition = $stockServices ? '1=1' : 'd.product_type = 0';
+	$sql = 'SELECT d.rowid, d.fk_commande, d.fk_product, d.fk_unit, d.description, d.qty AS ordered_qty,';
+	$sql .= ' d.product_type, d.rang, p.ref AS product_ref, p.label AS product_label,';
+	$sql .= ' p.tobatch, p.fk_default_warehouse, COALESCE(done.processed_qty, 0) AS processed_qty,';
+	$sql .= ' CASE WHEN ROUND(d.qty - COALESCE(done.processed_qty, 0), 5) > 0 THEN ROUND(d.qty - COALESCE(done.processed_qty, 0), 5) ELSE 0 END AS outstanding_qty';
+	$sql .= ' FROM '.MAIN_DB_PREFIX.'commandedet d';
+	$sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'product p ON p.rowid = d.fk_product';
+	$sql .= ' LEFT JOIN (SELECT ed.fk_elementdet, SUM(ed.qty) AS processed_qty';
+	$sql .= ' FROM '.MAIN_DB_PREFIX.'expeditiondet ed';
+	$sql .= ' JOIN '.MAIN_DB_PREFIX.'expedition e ON e.rowid = ed.fk_expedition';
+	$sql .= " WHERE e.entity IN (".$movementEntitySql.") AND e.fk_statut >= 0 AND ed.element_type = 'commande'";
+	$sql .= ' GROUP BY ed.fk_elementdet) done ON done.fk_elementdet = d.rowid';
+	$sql .= ' WHERE d.fk_commande = '.((int) $salesOrderId).' AND '.$lineCondition;
+	$sql .= ' AND ROUND(d.qty - COALESCE(done.processed_qty, 0), 5) > 0';
+	$sql .= ' ORDER BY d.rang, d.rowid';
+	$lines = array();
+	$resql = $db->query($sql);
+	while ($resql && ($line = $db->fetch_object($resql))) {
+		$lines[(int) $line->rowid] = $line;
+	}
+	return $lines;
+};
 
 $getReceptionLines = function ($purchaseOrderId) use ($db, $movementEntitySql, $stockServices) {
 	$lineCondition = $stockServices ? '1=1' : 'd.product_type = 0';
@@ -80,6 +113,123 @@ $getReceptionLines = function ($purchaseOrderId) use ($db, $movementEntitySql, $
 	}
 	return $lines;
 };
+
+// Add outstanding Sales Order lines to the Shipment draft that is already open.
+if ($isShipment && $action === 'import_shipment' && $destinationId > 0 && $destination) {
+	$salesOrder = new Commande($db);
+	if ($salesOrder->fetch($orderId) <= 0 || (int) $salesOrder->entity !== (int) $conf->entity || !in_array((int) $salesOrder->status, array(1, 2), true)) {
+		setEventMessages($langs->trans('ErrorRecordNotFound'), null, 'errors');
+	} elseif ((int) $salesOrder->socid !== (int) $destination->socid) {
+		setEventMessages($langs->trans('PICustomerMustMatch'), null, 'errors');
+	} else {
+		$selected = array();
+		foreach ((array) GETPOST('line_id', 'array:int') as $lineId) {
+			$lineId = (int) $lineId;
+			$qty = price2num(GETPOST('qty_'.$lineId), 'MS');
+			if ($qty > 0) {
+				$selected[] = array(
+					'line_id' => $lineId,
+					'qty' => (float) $qty,
+					'warehouse_id' => GETPOSTINT('entrepot_'.$lineId),
+					'batch_stock_id' => GETPOSTINT('batch_stock_'.$lineId),
+				);
+			}
+		}
+		if (!$selected) {
+			setEventMessages($langs->trans('PISelectAtLeastOneItem'), null, 'errors');
+		} else {
+			$db->begin();
+			$availableLines = $getShipmentLines($orderId);
+			$error = 0;
+			foreach ($selected as $selection) {
+				$lineId = $selection['line_id'];
+				if (empty($availableLines[$lineId]) || $selection['qty'] > (float) $availableLines[$lineId]->outstanding_qty + 0.000001) {
+					setEventMessages($langs->trans('PIQtyExceedsOutstanding'), null, 'errors');
+					$error++;
+					break;
+				}
+				$sourceLine = $availableLines[$lineId];
+				$warehouseId = $selection['warehouse_id'];
+				if (!empty($sourceLine->tobatch)) {
+					$batchSql = 'SELECT pb.qty, ps.fk_product, ps.fk_entrepot';
+					$batchSql .= ' FROM '.MAIN_DB_PREFIX.'product_batch pb';
+					$batchSql .= ' JOIN '.MAIN_DB_PREFIX.'product_stock ps ON ps.rowid = pb.fk_product_stock';
+					$batchSql .= ' JOIN '.MAIN_DB_PREFIX.'entrepot w ON w.rowid = ps.fk_entrepot';
+					$batchSql .= ' WHERE pb.rowid = '.((int) $selection['batch_stock_id']);
+					$batchSql .= ' AND ps.fk_product = '.((int) $sourceLine->fk_product);
+					$batchSql .= ' AND w.entity IN ('.getEntity('stock').') AND w.statut = 1';
+					$batchResult = $db->query($batchSql);
+					$batchStock = $batchResult ? $db->fetch_object($batchResult) : null;
+					if (!$batchStock || (float) $batchStock->qty + 0.000001 < $selection['qty']) {
+						setEventMessages($langs->trans('PIBatchStockRequired'), null, 'errors');
+						$error++;
+						break;
+					}
+					$warehouseId = (int) $batchStock->fk_entrepot;
+					require_once DOL_DOCUMENT_ROOT.'/expedition/class/expeditionlinebatch.class.php';
+					$batchLine = new ExpeditionLineBatch($db);
+					if ($batchLine->fetchFromStock($selection['batch_stock_id']) <= 0) {
+						setEventMessages($batchLine->error, $batchLine->errors, 'errors');
+						$error++;
+						break;
+					}
+					$batchLine->qty = $selection['qty'];
+					$shipmentLine = new stdClass();
+					$shipmentLine->detail_batch = array($batchLine);
+					$shipmentLine->origin_line_id = $lineId;
+					$shipmentLine->rang = (int) $sourceLine->rang;
+					if ($destination->create_line_batch($shipmentLine) <= 0) {
+						setEventMessages($destination->error, $destination->errors, 'errors');
+						$error++;
+						break;
+					}
+				} else {
+					if (!empty($sourceLine->fk_product)) {
+						$warehouseSql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'entrepot WHERE rowid = '.((int) $warehouseId);
+						$warehouseSql .= ' AND entity IN ('.getEntity('stock').') AND statut = 1';
+						$warehouseResult = $db->query($warehouseSql);
+						if (!$warehouseResult || !$db->num_rows($warehouseResult)) {
+							setEventMessages($langs->trans('ErrorFieldRequired', $langs->trans('Warehouse')), null, 'errors');
+							$error++;
+							break;
+						}
+					}
+					// Reuse the native Shipment validation (required warehouse,
+					// sufficient stock, virtual-product rules) before persisting.
+					if ($destination->addline($warehouseId, $lineId, $selection['qty'], array(), (int) $sourceLine->fk_product) < 0) {
+						setEventMessages($destination->error, $destination->errors, 'errors');
+						$error++;
+						break;
+					}
+					if ($destination->create_line($warehouseId, $lineId, $selection['qty'], (int) $sourceLine->rang, array(), 0, (int) $sourceLine->fk_product) <= 0) {
+						setEventMessages($destination->error, $destination->errors, 'errors');
+						$error++;
+						break;
+					}
+				}
+			}
+			if (!$error) {
+				$linkExistsSql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'element_element';
+				$linkExistsSql .= " WHERE sourcetype = 'commande' AND fk_source = ".((int) $orderId);
+				$linkExistsSql .= " AND targettype = 'shipping' AND fk_target = ".((int) $destinationId);
+				$linkExists = $db->query($linkExistsSql);
+				if (!$linkExists || !$db->num_rows($linkExists)) {
+					if ($destination->add_object_linked('commande', $orderId, $user) <= 0) {
+						setEventMessages($destination->error, $destination->errors, 'errors');
+						$error++;
+					}
+				}
+			}
+			if (!$error) {
+				$db->commit();
+				setEventMessages($langs->trans('PIShipmentItemsAddedToDraft'), null, 'mesgs');
+				header('Location: '.DOL_URL_ROOT.'/expedition/card.php?id='.(int) $destinationId);
+				exit;
+			}
+			$db->rollback();
+		}
+	}
+}
 
 // Import into an already-open draft Reception.  This is the ERP-style
 // "Get Items" behavior: it enriches the current draft instead of silently
@@ -185,7 +335,7 @@ if ($isShipment) {
 	$partyLabel = $langs->trans('Customer');
 	$dateLabel = $langs->trans('OrderDate');
 	$processedLabel = $langs->trans('QtyShipped');
-	$backUrl = DOL_URL_ROOT.'/expedition/list.php?leftmenu=sendings';
+	$backUrl = $destinationId > 0 ? DOL_URL_ROOT.'/expedition/card.php?id='.(int) $destinationId : DOL_URL_ROOT.'/expedition/list.php?leftmenu=sendings';
 	$lineCondition = $stockServices ? '1=1' : 'd.product_type = 0';
 	$sql = 'SELECT o.rowid, o.ref, o.ref_client AS thirdparty_ref, o.date_commande AS order_date,';
 	$sql .= ' s.nom AS thirdparty_name, COUNT(DISTINCT d.rowid) AS line_count,';
@@ -266,6 +416,72 @@ print '<div class="liste_titre liste_titre_bydiv centpercent">';
 print '<div class="divsearchfield">'.$langs->trans('Search').' <input type="text" class="minwidth300" name="search" value="'.dol_escape_htmltag($search).'" placeholder="Ref / '.$partyLabel.'"></div>';
 print '<div class="divsearchfield"><button class="button" type="submit">'.$langs->trans('Search').'</button></div>';
 print '</div></form>';
+
+if ($isShipment && $orderId > 0) {
+	$salesOrder = new Commande($db);
+	$validOrder = $salesOrder->fetch($orderId) > 0
+		&& (int) $salesOrder->entity === (int) $conf->entity
+		&& in_array((int) $salesOrder->status, array(1, 2), true);
+	if ($validOrder && $destination && (int) $salesOrder->socid !== (int) $destination->socid) {
+		$validOrder = false;
+	}
+	$sourceLines = $validOrder ? $getShipmentLines($orderId) : array();
+	if (!$validOrder) {
+		setEventMessages($langs->trans('ErrorRecordNotFound'), null, 'errors');
+	} else {
+		$formproduct = new FormProduct($db);
+		$warehouseIds = array();
+		$warehouseSql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'entrepot WHERE entity IN ('.getEntity('stock').') AND statut = 1 ORDER BY rowid';
+		$warehouseResult = $db->query($warehouseSql);
+		while ($warehouseResult && ($warehouse = $db->fetch_object($warehouseResult))) {
+			$warehouseIds[] = (int) $warehouse->rowid;
+		}
+		$onlyWarehouseId = count($warehouseIds) === 1 ? $warehouseIds[0] : 0;
+		print '<div class="fichecenter pi-get-items-detail">';
+		print load_fiche_titre($langs->trans('PIItemsFromOrder', $salesOrder->ref), '', 'order');
+		print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
+		print '<input type="hidden" name="token" value="'.newToken().'">';
+		print '<input type="hidden" name="action" value="import_shipment">';
+		print '<input type="hidden" name="target" value="shipment">';
+		print '<input type="hidden" name="order_id" value="'.(int) $orderId.'">';
+		print '<input type="hidden" name="destination_id" value="'.(int) $destinationId.'">';
+		print '<div class="div-table-responsive"><table class="tagtable liste centpercent">';
+		print '<tr class="liste_titre"><th>'.$langs->trans('Product').'</th><th class="right">'.$langs->trans('PIOrderedQty').'</th>';
+		print '<th class="right">'.$langs->trans('QtyShipped').'</th><th class="right">'.$langs->trans('PIOutstandingQty').'</th>';
+		print '<th class="right">'.$langs->trans('QtyToShip').'</th><th>'.$langs->trans('Warehouse').'</th></tr>';
+		if (!$sourceLines) {
+			print '<tr><td colspan="6" class="center opacitymedium">'.$langs->trans('NoRecordFound').'</td></tr>';
+		}
+		foreach ($sourceLines as $sourceLine) {
+			$lineId = (int) $sourceLine->rowid;
+			$defaultWarehouse = (int) $sourceLine->fk_default_warehouse ?: $onlyWarehouseId;
+			print '<tr class="oddeven">';
+			print '<td>'.dol_escape_htmltag($sourceLine->product_ref.' - '.$sourceLine->product_label).'</td>';
+			print '<td class="right">'.price($sourceLine->ordered_qty).'</td>';
+			print '<td class="right">'.price($sourceLine->processed_qty).'</td>';
+			print '<td class="right"><strong>'.price($sourceLine->outstanding_qty).'</strong></td>';
+			print '<td class="right"><input type="hidden" name="line_id[]" value="'.$lineId.'"><input class="width75 right" type="number" step="any" min="0" max="'.dol_escape_htmltag($sourceLine->outstanding_qty).'" name="qty_'.$lineId.'" value="'.dol_escape_htmltag($sourceLine->outstanding_qty).'"></td>';
+			print '<td>';
+			if (!empty($sourceLine->tobatch)) {
+				print $formproduct->selectLotStock('ifone', 'batch_stock_'.$lineId, '', 1, 0, (int) $sourceLine->fk_product, 0, array(), $langs->trans('PISelectBatchStock'));
+			} elseif (!empty($sourceLine->fk_product)) {
+				print $formproduct->selectWarehouses($defaultWarehouse, 'entrepot_'.$lineId, '', 1, 0, (int) $sourceLine->fk_product, '', 1, 0, array(), 'minwidth200');
+			} else {
+				print '<span class="opacitymedium">'.$langs->trans('NotApplicable').'</span><input type="hidden" name="entrepot_'.$lineId.'" value="0">';
+			}
+			print '</td></tr>';
+		}
+		print '</table></div>';
+		if ($sourceLines && $destinationId > 0) {
+			print '<div class="center tabsAction"><button class="butAction" type="submit">'.$langs->trans('PIGetSelectedItems').'</button> ';
+			print '<a class="butActionCancel" href="'.dol_escape_htmltag($_SERVER['PHP_SELF'].'?target=shipment&destination_id='.(int) $destinationId).'">'.$langs->trans('Cancel').'</a></div>';
+		}
+		print '</form></div><br>';
+		llxFooter();
+		$db->close();
+		exit;
+	}
+}
 
 if (!$isShipment && $orderId > 0) {
 	$purchaseOrder = new CommandeFournisseur($db);
@@ -365,7 +581,7 @@ foreach ($rows as $row) {
 	$processed = (float) $row->processed_qty;
 	$outstanding = (float) $row->outstanding_qty;
 	$createUrl = $isShipment
-		? DOL_URL_ROOT.'/expedition/card.php?action=create&origin=commande&origin_id='.(int) $row->rowid
+		? ($destinationId > 0 ? $_SERVER['PHP_SELF'].'?target=shipment&order_id='.(int) $row->rowid.'&destination_id='.(int) $destinationId : DOL_URL_ROOT.'/expedition/card.php?action=create&origin=commande&origin_id='.(int) $row->rowid)
 		: $_SERVER['PHP_SELF'].'?target=reception&order_id='.(int) $row->rowid.($destinationId > 0 ? '&destination_id='.(int) $destinationId : '');
 	$orderUrl = $isShipment
 		? DOL_URL_ROOT.'/commande/card.php?id='.(int) $row->rowid

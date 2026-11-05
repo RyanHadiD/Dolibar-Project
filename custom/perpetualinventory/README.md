@@ -39,6 +39,7 @@ Shipment dan Reception dapat dibuat dengan alur ERP-style dari menu Products/Ser
 
 - Tombol native **New shipment** dan **New reception** langsung membuka pemilih order sumber, sehingga pengguna tidak perlu masuk ke kartu order terlebih dahulu.
 - **Shipment → Get Items From Sales Order** menampilkan Sales Order tervalidasi yang masih memiliki qty belum dikirim.
+- Dari Shipment berstatus Draft, **Get Items From Sales Order** menambahkan item ke draft yang sedang dibuka dan tidak membuat Shipment baru. Customer harus sama; qty, warehouse, dan batch/serial dipilih sebelum item diambil.
 - **Reception → Get Items From Purchase Order** menampilkan Purchase Order yang sudah dikirim ke supplier dan masih memiliki qty belum diterima.
 - Dari Reception berstatus Draft, **Get Items From Purchase Order** menambahkan item ke draft yang sedang dibuka dan tidak membuat Reception baru. Supplier harus sama, lalu qty, warehouse, lot/batch, dan tanggal kedaluwarsa dapat diperiksa sebelum item diambil.
 - Dari Customer Invoice berstatus Draft, **Get Items From Shipment** menambahkan qty Shipment yang belum ditagihkan dari customer yang sama.

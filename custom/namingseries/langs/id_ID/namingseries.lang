@@ -1,0 +1,11 @@
+ModuleNamingSeriesName=Naming Series
+ModuleNamingSeriesDesc=Penomoran dokumen fleksibel dengan counter berdasarkan periode
+NSNamingSeries=Naming Series
+NSSeries=Series
+NSCurrentCounter=Current Counter
+NSRenumberDocuments=Urutkan Nomor Dokumen
+NSAudit=Audit
+NSSetup=Pengaturan
+NSOrderNumberingDescription=Penomoran Sales Order fleksibel yang dikelola oleh modul Naming Series.
+NSGenericNumberingDescription=Penomoran dokumen fleksibel yang dikelola oleh modul Naming Series.
+NoActiveNamingSeries=Belum ada Naming Series aktif.
