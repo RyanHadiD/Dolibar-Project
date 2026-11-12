@@ -680,6 +680,31 @@ class PerpetualInventory
 		});
 	}
 
+	/** Remove invoice bookkeeping and leave the invoice in its native canceled status. */
+	public function cancelInvoiceWithLedger($invoice, $user, $reason)
+	{
+		$type = in_array($invoice->element, array('facture_fourn', 'invoice_supplier'), true) ? 'supplier' : 'customer';
+		if ((int) $invoice->status !== 1) {
+			throw new DomainException('Hanya invoice tervalidasi yang dapat dibatalkan.');
+		}
+		if (method_exists($invoice, 'getSommePaiement') && abs((float) $invoice->getSommePaiement()) > 0.0000001) {
+			throw new DomainException('Invoice memiliki pembayaran. Batalkan atau hapus pembayaran terlebih dahulu.');
+		}
+		if ($type === 'customer' && method_exists($invoice, 'is_last_in_cycle') && !$invoice->is_last_in_cycle()) {
+			throw new DomainException('Invoice bukan dokumen terakhir dalam siklus. Batalkan dokumen turunannya terlebih dahulu.');
+		}
+		return $this->transaction(function () use ($invoice, $user, $type, $reason) {
+			$this->cancelInvoiceAccounting($type, $invoice->id);
+			$result = $invoice->setCanceled($user, 'abandon', mb_substr($reason, 0, 255));
+			if ($result < 0) {
+				$message = $invoice->error ?: implode('; ', (array) $invoice->errors);
+				throw new DomainException('Invoice gagal dibatalkan'.($message ? ': '.$message : '.'));
+			}
+			$invoice->status = $invoice->statut = 3;
+			return $result;
+		});
+	}
+
 	public function record($c, $b, $kind, $qty, $cost, $date, $key, $contra, $user, $meta = array())
 	{
 		$this->checkDate($date, $c, $b, !empty($meta['allow_historical']));

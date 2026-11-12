@@ -172,12 +172,17 @@ class ActionsPerpetualInventory
 				$label = $langs->trans($target === 'shipment' ? 'PIGetItemsFromSalesOrder' : 'PIGetItemsFromPurchaseOrder');
 				print dolGetButtonAction($langs->trans('PIGetItemsFromHelp', $source), $label, 'default', $url, '', true);
 			}
-			if (($status > 0 || ($object->element === 'shipping' && $status === -1)) && ($user->admin || $user->hasRight($module, 'creer'))) {
+			if (($status > 0 || $status === -1) && ($user->admin || $user->hasRight($module, 'creer'))) {
 				$actionName = $object->element === 'shipping' ? 'pi_amend_shipment' : 'pi_amend_reception';
 				$url = $_SERVER['PHP_SELF'].'?id='.(int) $object->id.'&action='.$actionName.'&token='.newToken();
 				$label = $status === -1 ? 'Amend → Draft' : 'Cancel & Amend';
-				$help = $status === -1 ? 'Pulihkan baris Shipment canceled dan buka sebagai Draft' : 'Batalkan posting stok/jurnal dan buka dokumen untuk direvisi';
+				$help = $status === -1 ? 'Buka kembali dokumen canceled sebagai Draft' : 'Batalkan posting stok/jurnal dan buka dokumen untuk direvisi';
 				print dolGetButtonAction($help, $label, 'default', $url, '', true);
+				if ($status > 0) {
+					$cancelAction = $object->element === 'shipping' ? 'pi_cancel_shipment' : 'pi_cancel_reception';
+					$cancelUrl = $_SERVER['PHP_SELF'].'?id='.(int) $object->id.'&action='.$cancelAction.'&token='.newToken();
+					print dolGetButtonAction('Batalkan dokumen dan pertahankan status Cancelled', 'Cancel', 'delete', $cancelUrl, '', true);
+				}
 			}
 			$this->printAuditButton($object);
 			return 0;
@@ -186,9 +191,14 @@ class ActionsPerpetualInventory
 			$type = $this->documentType($object);
 			$isPayment = strpos($type, 'payment') !== false;
 			$status = isset($object->status) ? (int) $object->status : (int) $object->statut;
+			$isCanceled = ($type === 'customer_order' && $status < 0) || ($type === 'supplier_order' && in_array($status, array(6, 7), true));
 			if ($isPayment || $status !== 0) {
-				$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
-				print dolGetButtonAction($isPayment ? 'Batalkan payment native, simpan snapshot audit, lalu buat payment pengganti' : 'Kembalikan dokumen ke Draft setelah memastikan tidak ada dokumen turunan aktif', $isPayment ? 'Revisi Payment' : 'Cancel & Amend', 'default', $url, '', true);
+				$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode=amend&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
+				print dolGetButtonAction($isPayment ? 'Batalkan payment native, simpan snapshot audit, lalu buat payment pengganti' : 'Kembalikan dokumen ke Draft setelah memastikan tidak ada dokumen turunan aktif', $isPayment ? 'Revisi Payment' : ($isCanceled ? 'Amend → Draft' : 'Cancel & Amend'), 'default', $url, '', true);
+				if (!$isPayment && !$isCanceled) {
+					$cancelUrl = dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode=cancel&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
+					print dolGetButtonAction('Batalkan dokumen dan pertahankan status Cancelled', 'Cancel', 'delete', $cancelUrl, '', true);
+				}
 			}
 			$this->printAuditButton($object);
 			return 0;
@@ -208,9 +218,13 @@ class ActionsPerpetualInventory
 		$idKey = $this->invoiceType($object) === 'supplier' ? 'id' : 'facid';
 		if ($this->canRevise($object, $user) && in_array((int) $object->status, array(1, 3), true)) {
 			$type = $this->documentType($object);
-			$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
+			$url = dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode=amend&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
 			$params = array('attr' => array('class' => 'classfortooltip', 'title' => 'Batalkan posting buku besar, simpan snapshot, lalu kembalikan invoice ke Draft'));
-			print dolGetButtonAction('Batalkan posting, simpan snapshot audit, dan buka invoice untuk direvisi', 'Cancel & Amend', 'default', $url, '', true, $params);
+			print dolGetButtonAction('Batalkan posting, simpan snapshot audit, dan buka invoice untuk direvisi', (int) $object->status === 3 ? 'Amend → Draft' : 'Cancel & Amend', 'default', $url, '', true, $params);
+			if ((int) $object->status === 1) {
+				$cancelUrl = dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode=cancel&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken();
+				print dolGetButtonAction('Batalkan posting dan pertahankan invoice pada status Cancelled', 'Cancel', 'delete', $cancelUrl, '', true);
+			}
 		}
 		if ($this->canDelete($object, $user)) {
 			$url = $_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id.'&action=pi_delete_ledger&token='.newToken();
@@ -246,14 +260,14 @@ class ActionsPerpetualInventory
 	{
 		global $form;
 		$this->resprints = '';
-		$stockActions = array('pi_cancel_shipment', 'pi_amend_shipment', 'pi_amend_reception');
+		$stockActions = array('pi_cancel_shipment', 'pi_cancel_reception', 'pi_amend_shipment', 'pi_amend_reception');
 		if (!in_array($action, array_merge(array('pi_delete_ledger', 'pi_revise_ledger'), $stockActions), true)) {
 			return 0;
 		}
 		if (in_array($action, $stockActions, true)) {
-			$isCancel = $action === 'pi_cancel_shipment';
+			$isCancel = in_array($action, array('pi_cancel_shipment', 'pi_cancel_reception'), true);
 			$isShipment = $object->element === 'shipping';
-			$isCanceledAmend = !$isCancel && $isShipment && (int) $object->status === -1;
+			$isCanceledAmend = !$isCancel && (int) $object->status === -1;
 			$questions = array(array(
 				'type' => 'text',
 				'name' => 'pi_reason',
@@ -263,9 +277,9 @@ class ActionsPerpetualInventory
 			));
 			$this->resprints = $form->formconfirm(
 				$_SERVER['PHP_SELF'].'?id='.(int) $object->id,
-				$isCancel ? 'Batalkan Shipment' : ($isCanceledAmend ? 'Amend Shipment Canceled' : 'Batalkan Posting untuk Revisi'),
-				($isCancel ? 'Shipment akan dibatalkan dan stok/jurnalnya dibalik.' : ($isCanceledAmend ? 'Baris Shipment akan dipulihkan dan dokumen dibuka kembali sebagai Draft tanpa membalik stok untuk kedua kali.' : 'Posting stok dan jurnal akan dibatalkan, lalu dokumen dikembalikan ke Draft agar dapat direvisi.')).' Alasan akan disimpan dalam audit trail.',
-				$isCancel ? 'pi_confirm_cancel_shipment' : ($isShipment ? 'pi_confirm_amend_shipment' : 'pi_confirm_amend_reception'),
+				$isCancel ? 'Batalkan '.($isShipment ? 'Shipment' : 'Reception') : ($isCanceledAmend ? 'Amend Dokumen Canceled' : 'Batalkan Posting untuk Revisi'),
+				($isCancel ? ($isShipment ? 'Shipment' : 'Reception').' akan dibatalkan dan stok/jurnalnya dibalik. Status akhir tetap Cancelled.' : ($isCanceledAmend ? 'Dokumen akan dibuka kembali sebagai Draft tanpa membalik stok untuk kedua kali.' : 'Posting stok dan jurnal akan dibatalkan, lalu dokumen dikembalikan ke Draft agar dapat direvisi.')).' Alasan akan disimpan dalam audit trail.',
+				$isCancel ? ($isShipment ? 'pi_confirm_cancel_shipment' : 'pi_confirm_cancel_reception') : ($isShipment ? 'pi_confirm_amend_shipment' : 'pi_confirm_amend_reception'),
 				$questions,
 				'no',
 				1
@@ -314,17 +328,19 @@ class ActionsPerpetualInventory
 		}
 		if (isModEnabled('perpetualinventory') && in_array($object->element, array('commande', 'order_supplier'), true) && in_array($action, array('cancel', 'confirm_cancel', 'modif', 'confirm_modif', 'reopen'), true)) {
 			$type = $this->documentType($object);
-			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
+			$mode = in_array($action, array('cancel', 'confirm_cancel'), true) ? 'cancel' : 'amend';
+			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode='.$mode.'&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
 			exit;
 		}
 		if (isModEnabled('perpetualinventory') && in_array($object->element, array('payment', 'payment_supplier'), true) && $action === 'delete') {
 			$type = $this->documentType($object);
-			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
+			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode=amend&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
 			exit;
 		}
 		if (isModEnabled('perpetualinventory') && in_array($object->element, array('facture', 'facture_fourn', 'invoice', 'invoice_supplier'), true) && in_array($action, array('modif', 'confirm_modif', 'edit', 'confirm_edit', 'canceled', 'confirm_canceled'), true) && (int) $object->status !== 0) {
 			$type = $this->documentType($object);
-			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
+			$mode = in_array($action, array('canceled', 'confirm_canceled'), true) ? 'cancel' : 'amend';
+			header('Location: '.dol_buildpath('/perpetualinventory/document_action.php', 1).'?mode='.$mode.'&type='.urlencode($type).'&id='.(int) $object->id.'&token='.newToken());
 			exit;
 		}
 		if (isModEnabled('perpetualinventory') && $object->element === 'shipping') {
@@ -344,11 +360,11 @@ class ActionsPerpetualInventory
 			}
 		}
 		if (isModEnabled('perpetualinventory') && $object->element === 'reception' && in_array($action, array('modif', 'annuler'), true)) {
-			$action = 'pi_amend_reception';
+			$action = $action === 'annuler' ? 'pi_cancel_reception' : 'pi_amend_reception';
 			return 0;
 		}
 
-		$stockConfirmActions = array('pi_confirm_cancel_shipment', 'pi_confirm_amend_shipment', 'pi_confirm_amend_reception');
+		$stockConfirmActions = array('pi_confirm_cancel_shipment', 'pi_confirm_cancel_reception', 'pi_confirm_amend_shipment', 'pi_confirm_amend_reception');
 		if (in_array($action, $stockConfirmActions, true) && GETPOST('confirm', 'alpha') === 'yes') {
 			if (!$user->hasRight($object->element === 'shipping' ? 'expedition' : 'reception', 'creer')) {
 				$this->error = 'Tidak memiliki izin membatalkan atau merevisi dokumen.';
@@ -371,8 +387,22 @@ class ActionsPerpetualInventory
 						$pi->recordDocumentAction('shipment', $object->id, $object->ref, 'cancel', $reason, $user, $snapshot);
 						return;
 					}
+					if ($action === 'pi_confirm_cancel_reception') {
+						$result = $object->setDraft($user);
+						if ($result < 0 || $object->setStatut(-1) < 0) {
+							throw new DomainException($object->error ?: 'Reception gagal dibatalkan.');
+						}
+						$object->status = $object->statut = -1;
+						$pi->recordDocumentAction('reception', $object->id, $object->ref, 'cancel', $reason, $user, $snapshot);
+						return;
+					}
 					if ($object->element === 'shipping' && (int) $object->status === -1) {
 						$result = $pi->amendCanceledShipment($object, $user);
+					} elseif ($object->element === 'reception' && (int) $object->status === -1) {
+						$result = $object->setStatut(0);
+						if ($result >= 0) {
+							$object->status = $object->statut = 0;
+						}
 					} else {
 						$result = $object->element === 'shipping' ? $object->setDraft($user, 0) : $object->setDraft($user);
 					}

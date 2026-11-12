@@ -9,6 +9,10 @@ require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.class.php';
 
 $type = GETPOST('type', 'alpha');
 $id = GETPOSTINT('id');
+$mode = GETPOST('mode', 'alpha');
+if (!in_array($mode, array('cancel', 'amend'), true)) {
+	$mode = 'amend';
+}
 $definitions = array(
 	'customer_order' => array('class' => 'Commande', 'right' => array('commande', 'creer'), 'label' => 'Sales Order', 'return' => DOL_URL_ROOT.'/commande/card.php?id='),
 	'supplier_order' => array('class' => 'CommandeFournisseur', 'right' => array('fournisseur', 'commande', 'creer'), 'label' => 'Purchase Order', 'return' => DOL_URL_ROOT.'/fourn/commande/card.php?id='),
@@ -113,6 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 		try {
 			$isPayment = strpos($type, 'payment') !== false;
 			$isInvoice = strpos($type, 'invoice') !== false;
+			$isCancel = $mode === 'cancel' && !$isPayment;
 			$replacementUrl = '';
 			if ($type === 'customer_payment') {
 				$firstInvoice = $pi->one('SELECT fk_facture invoice_id FROM '.$pi->table('paiement_facture').' WHERE fk_paiement='.(int) $object->id.' ORDER BY rowid LIMIT 1');
@@ -121,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 				$firstInvoice = $pi->one('SELECT fk_facturefourn invoice_id FROM '.$pi->table('paiementfourn_facturefourn').' WHERE fk_paiementfourn='.(int) $object->id.' ORDER BY rowid LIMIT 1');
 				if ($firstInvoice) $replacementUrl = DOL_URL_ROOT.'/fourn/facture/paiement.php?facid='.(int) $firstInvoice->invoice_id.'&action=create';
 			}
-			$pi->transaction(function () use ($type, $object, $user, $pi, $reason, $isPayment, $isInvoice) {
+			$pi->transaction(function () use ($type, $object, $user, $pi, $reason, $isPayment, $isInvoice, $isCancel) {
 				$snapshot = piLifecycleSnapshot($type, $object, $pi);
 				if ($isPayment) {
 					piReopenPaidInvoices($type, $object->id, $pi, $user);
@@ -131,11 +136,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 					return;
 				}
 				if ($isInvoice) {
-					$pi->reviseInvoiceWithLedger($object, $user);
-					$pi->recordDocumentAction($type, $object->id, $object->ref, 'amend', $reason, $user, $snapshot);
+					if ($isCancel) {
+						$pi->cancelInvoiceWithLedger($object, $user, $reason);
+					} else {
+						$pi->reviseInvoiceWithLedger($object, $user);
+					}
+					$pi->recordDocumentAction($type, $object->id, $object->ref, $isCancel ? 'cancel' : 'amend', $reason, $user, $snapshot);
 					return;
 				}
 				piAssertNoActiveChildren($type, $object->id, $pi);
+				if ($isCancel) {
+					if (($type === 'customer_order' && (int) $object->status < 0) || ($type === 'supplier_order' && in_array((int) $object->status, array(6, 7), true))) {
+						throw new DomainException('Dokumen sudah berstatus Cancelled. Gunakan Amend → Draft bila ingin merevisinya.');
+					}
+					if ($type === 'customer_order' && (int) $object->status !== Commande::STATUS_VALIDATED) {
+						$result = $object->setDraft($user, -1);
+						if ($result >= 0) {
+							$pi->q('UPDATE '.$pi->table('commande').' SET fk_statut='.Commande::STATUS_CANCELED.',fk_user_modif='.(int) $user->id.' WHERE entity='.$pi->entity.' AND rowid='.(int) $object->id);
+							$object->status = $object->statut = Commande::STATUS_CANCELED;
+							$result = $object->call_trigger('ORDER_CANCEL', $user);
+						}
+					} elseif ($type === 'supplier_order') {
+						$result = $object->setStatus($user, CommandeFournisseur::STATUS_CANCELED);
+					} else {
+						$result = $object->cancel($user);
+					}
+					if ($result < 0) throw new DomainException($object->error ?: implode('; ', (array) $object->errors));
+					$pi->recordDocumentAction($type, $object->id, $object->ref, 'cancel', $reason, $user, $snapshot);
+					return;
+				}
 				if ($type === 'customer_order') {
 					if ((int) $object->status < 0) {
 						$pi->q('UPDATE '.$pi->table('commande').' SET fk_statut=0,fk_user_modif='.(int) $user->id.' WHERE entity='.$pi->entity.' AND rowid='.(int) $object->id);
@@ -150,7 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 				if ($result < 0) throw new DomainException($object->error ?: implode('; ', (array) $object->errors));
 				$pi->recordDocumentAction($type, $object->id, $object->ref, 'amend', $reason, $user, $snapshot);
 			});
-			setEventMessages($isPayment ? 'Payment dibatalkan. Gunakan snapshot audit sebagai referensi untuk membuat payment pengganti.' : 'Dokumen berhasil dikembalikan ke Draft untuk direvisi.', null, 'mesgs');
+			setEventMessages($isPayment ? 'Payment dibatalkan. Gunakan snapshot audit sebagai referensi untuk membuat payment pengganti.' : ($isCancel ? 'Dokumen berhasil dibatalkan dan statusnya menjadi Cancelled.' : 'Dokumen berhasil dikembalikan ke Draft untuk direvisi.'), null, 'mesgs');
 			$target = ($isPayment && $replacementUrl) ? $replacementUrl : $definition['return'].($isPayment ? '' : (int) $object->id);
 			header('Location: '.$target);
 			exit;
@@ -160,13 +189,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 	}
 }
 
-piHeader(($type === 'customer_payment' || $type === 'supplier_payment') ? 'Revisi '.$definition['label'] : 'Cancel & Amend '.$definition['label']);
+piHeader(($type === 'customer_payment' || $type === 'supplier_payment') ? 'Revisi '.$definition['label'] : ($mode === 'cancel' ? 'Cancel ' : 'Cancel & Amend ').$definition['label']);
 print '<div class="fichecenter"><div class="underbanner clearboth"></div><div class="info">Dokumen: <b>'.piEscape($object->ref ?: '#'.$object->id).'</b>. Sistem akan memeriksa dokumen turunan, rekonsiliasi bank, pembayaran, stok, dan ledger melalui aturan native sebelum perubahan dilakukan.</div>';
 print '<form method="post" class="pi-form">';
 piToken('confirm');
 print '<input type="hidden" name="type" value="'.piEscape($type).'"><input type="hidden" name="id" value="'.(int) $id.'">';
+print '<input type="hidden" name="mode" value="'.piEscape($mode).'">';
 print '<label for="reason">Alasan pembatalan/revisi</label><textarea class="minwidth500" id="reason" name="reason" rows="4" minlength="5" maxlength="1000" required>'.piEscape(GETPOST('reason', 'restricthtml')).'</textarea>';
 $isPaymentPage = strpos($type, 'payment') !== false;
-print '<p class="pi-muted">'.($isPaymentPage ? 'Payment akan dihapus secara native dan harus dibuat ulang. Payment dengan bank line yang sudah direkonsiliasi tidak dapat dibatalkan.' : 'Dokumen akan kembali ke Draft. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.').'</p>';
+print '<p class="pi-muted">'.($isPaymentPage ? 'Payment akan dihapus secara native dan harus dibuat ulang. Payment dengan bank line yang sudah direkonsiliasi tidak dapat dibatalkan.' : ($mode === 'cancel' ? 'Dokumen akan dibatalkan dan status akhirnya tetap Cancelled. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.' : 'Dokumen akan kembali ke Draft. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.')).'</p>';
 print '<button class="button button-save" type="submit">Konfirmasi</button> <a class="button" href="'.piEscape($definition['return'].($isPaymentPage ? '' : (int) $object->id)).'">Kembali</a></form></div>';
 piEnd();
