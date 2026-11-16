@@ -340,6 +340,9 @@ class PerpetualInventory
 			}
 		}
 		$idList = implode(',', $ids);
+		$docType = $originType === 'shipping' ? 'shipment' : 'reception';
+		$journalWhere = 'entity='.$this->entity.' AND ((doc_type='.$this->str($docType).' AND fk_doc='.(int) $originId.' AND fk_docdet IN ('.$idList.')) OR (doc_type='.$this->str('perpetualinventory').' AND fk_doc IN ('.$idList.')))';
+		$this->assertAccountingRowsReversible($journalWhere, $originType === 'shipping' ? 'Shipment' : 'Reception');
 		if ($this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_source IN ('.$idList.') LIMIT 1')) {
 			throw new DomainException('Dokumen memiliki retur/pembalik lanjutan. Batalkan transaksi turunannya terlebih dahulu.');
 		}
@@ -612,6 +615,10 @@ class PerpetualInventory
 			throw new DomainException('Jenis invoice tidak valid.');
 		}
 		$this->config(true);
+		$types = $invoiceType === 'supplier' ? array('supplier_invoice', 'invoice_supplier') : array('customer_invoice', 'invoice');
+		$quoted = array_map(array($this, 'str'), $types);
+		$where = 'entity='.$this->entity.' AND fk_doc='.(int) $invoiceId.' AND doc_type IN ('.implode(',', $quoted).')';
+		$this->assertAccountingRowsReversible($where, 'Invoice');
 		if ($invoiceType === 'supplier') {
 			$lines = $this->rows('SELECT DISTINCT fk_invoice_line FROM '.$this->table('pi_match').' WHERE entity='.$this->entity.' AND fk_invoice='.(int) $invoiceId);
 			$this->q('DELETE FROM '.$this->table('pi_match').' WHERE entity='.$this->entity.' AND fk_invoice='.(int) $invoiceId);
@@ -619,9 +626,54 @@ class PerpetualInventory
 				$this->q('UPDATE '.$this->table('facture_fourn_det').' SET fk_code_ventilation=0 WHERE rowid='.(int) $line->fk_invoice_line.' AND fk_facture_fourn='.(int) $invoiceId);
 			}
 		}
-		$types = $invoiceType === 'supplier' ? array('supplier_invoice', 'invoice_supplier') : array('customer_invoice', 'invoice');
+		$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE '.$where);
+	}
+
+	/**
+	 * Refuse destructive bookkeeping changes after an export or fiscal close.
+	 * A document that was only transferred to the local bookkeeping journal can
+	 * still be canceled: its source rows are removed before the native operation.
+	 */
+	private function assertAccountingRowsReversible($where, $label)
+	{
+		$row = $this->one('SELECT rowid,date_export,doc_date FROM '.$this->table('accounting_bookkeeping').' WHERE '.$where.' AND date_export IS NOT NULL LIMIT 1');
+		if ($row) {
+			throw new DomainException($label.' sudah diekspor dari pembukuan. Buat jurnal koreksi/reversal; pembatalan otomatis tidak diizinkan.');
+		}
+		$row = $this->one('SELECT b.rowid,b.doc_date FROM '.$this->table('accounting_bookkeeping').' b JOIN '.$this->table('accounting_fiscalyear').' f ON f.entity=b.entity AND f.statut=1 AND b.doc_date BETWEEN f.date_start AND f.date_end WHERE b.rowid IN (SELECT rowid FROM '.$this->table('accounting_bookkeeping').' WHERE '.$where.') LIMIT 1');
+		if ($row) {
+			throw new DomainException($label.' berada pada periode akuntansi yang sudah ditutup. Buka periode atau buat jurnal koreksi/reversal.');
+		}
+	}
+
+	/** Remove non-exported bookkeeping rows that make a native payment non-erasable. */
+	public function cancelPaymentAccounting($paymentType, $paymentId, $bankLineId = 0)
+	{
+		if (!in_array($paymentType, array('customer', 'supplier'), true) || (int) $paymentId <= 0) {
+			throw new DomainException('Jenis payment tidak valid.');
+		}
+		$paymentTable = $paymentType === 'supplier' ? 'paiementfourn' : 'paiement';
+		if ((int) $bankLineId <= 0) {
+			$payment = $this->one('SELECT fk_bank FROM '.$this->table($paymentTable).' WHERE entity='.$this->entity.' AND rowid='.(int) $paymentId);
+			$bankLineId = $payment ? (int) $payment->fk_bank : 0;
+		}
+		if ($bankLineId > 0) {
+			$bank = $this->one('SELECT rowid,rappro FROM '.$this->table('bank').' WHERE rowid='.(int) $bankLineId);
+			if ($bank && !empty($bank->rappro)) {
+				throw new DomainException('Payment sudah direkonsiliasi pada bank. Batalkan rekonsiliasi bank terlebih dahulu.');
+			}
+			$where = 'entity='.$this->entity." AND doc_type='bank' AND fk_doc=".(int) $bankLineId;
+			$this->assertAccountingRowsReversible($where, 'Payment');
+			$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE '.$where);
+		}
+
+		// Keep compatibility with journals created by integrations that use the
+		// payment itself instead of its bank line as the source document.
+		$types = $paymentType === 'supplier' ? array('supplier_payment', 'payment_supplier') : array('customer_payment', 'payment');
 		$quoted = array_map(array($this, 'str'), $types);
-		$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity.' AND fk_doc='.(int) $invoiceId.' AND doc_type IN ('.implode(',', $quoted).')');
+		$where = 'entity='.$this->entity.' AND fk_doc='.(int) $paymentId.' AND doc_type IN ('.implode(',', $quoted).')';
+		$this->assertAccountingRowsReversible($where, 'Payment');
+		$this->q('DELETE FROM '.$this->table('accounting_bookkeeping').' WHERE '.$where);
 	}
 
 	/** Atomically remove an invoice after removing the bookkeeping rows that make core mark it non-erasable. */
@@ -1228,9 +1280,8 @@ class PerpetualInventory
 			if ($this->one('SELECT rowid FROM '.$this->table('pi_match').' WHERE entity='.$this->entity.' AND fk_entry IN ('.$idList.') LIMIT 1')) {
 				throw new DomainException('Stock Entry sudah dipakai dalam pencocokan invoice. Batalkan pencocokan tersebut terlebih dahulu.');
 			}
-			if ($this->one('SELECT rowid FROM '.$this->table('accounting_bookkeeping').' WHERE entity='.$this->entity." AND doc_type='stock_entry' AND fk_doc=".(int) $documentId.' AND date_export IS NOT NULL LIMIT 1')) {
-				throw new DomainException('Jurnal Stock Entry sudah diekspor dan tidak dapat dibatalkan. Buat jurnal koreksi pada periode aktif.');
-			}
+			$journalWhere = 'entity='.$this->entity." AND ((doc_type='stock_entry' AND fk_doc=".(int) $documentId.') OR (doc_type='.$this->str('perpetualinventory').' AND fk_doc IN ('.$idList.')))';
+			$this->assertAccountingRowsReversible($journalWhere, 'Stock Entry');
 			$pairs = array();
 			foreach ($entries as $entry) {
 				$key = (int) $entry->fk_product.':'.(int) $entry->fk_warehouse;

@@ -129,6 +129,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 			$pi->transaction(function () use ($type, $object, $user, $pi, $reason, $isPayment, $isInvoice, $isCancel) {
 				$snapshot = piLifecycleSnapshot($type, $object, $pi);
 				if ($isPayment) {
+					$paymentType = $type === 'supplier_payment' ? 'supplier' : 'customer';
+					$bankLineId = (int) ($object->bank_line ?? 0);
+					$pi->cancelPaymentAccounting($paymentType, $object->id, $bankLineId);
 					piReopenPaidInvoices($type, $object->id, $pi, $user);
 					$result = $object->delete($user);
 					if ($result <= 0) throw new DomainException($object->error ?: implode('; ', (array) $object->errors));
@@ -197,6 +200,6 @@ print '<input type="hidden" name="type" value="'.piEscape($type).'"><input type=
 print '<input type="hidden" name="mode" value="'.piEscape($mode).'">';
 print '<label for="reason">Alasan pembatalan/revisi</label><textarea class="minwidth500" id="reason" name="reason" rows="4" minlength="5" maxlength="1000" required>'.piEscape(GETPOST('reason', 'restricthtml')).'</textarea>';
 $isPaymentPage = strpos($type, 'payment') !== false;
-print '<p class="pi-muted">'.($isPaymentPage ? 'Payment akan dihapus secara native dan harus dibuat ulang. Payment dengan bank line yang sudah direkonsiliasi tidak dapat dibatalkan.' : ($mode === 'cancel' ? 'Dokumen akan dibatalkan dan status akhirnya tetap Cancelled. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.' : 'Dokumen akan kembali ke Draft. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.')).'</p>';
+print '<p class="pi-muted">'.($isPaymentPage ? 'Payment akan dihapus secara native dan harus dibuat ulang. Jurnal accounting lokal yang belum diekspor akan dilepas otomatis. Payment dengan bank line yang sudah direkonsiliasi, jurnal yang sudah diekspor, atau periode yang sudah ditutup tidak dapat dibatalkan otomatis.' : ($mode === 'cancel' ? 'Dokumen akan dibatalkan dan status akhirnya tetap Cancelled. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.' : 'Dokumen akan kembali ke Draft. Selesaikan dokumen turunannya terlebih dahulu bila sistem menolak.')).'</p>';
 print '<button class="button button-save" type="submit">Konfirmasi</button> <a class="button" href="'.piEscape($definition['return'].($isPaymentPage ? '' : (int) $object->id)).'">Kembali</a></form></div>';
 piEnd();

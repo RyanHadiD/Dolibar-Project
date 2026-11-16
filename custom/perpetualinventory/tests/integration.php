@@ -65,7 +65,7 @@ function fails($callback, $label)
 }
 try {
 	// No customer rows are copied. The driver rewrites even core MAIN_DB_PREFIX queries.
-	foreach (array('product', 'product_extrafields', 'product_stock', 'product_batch', 'product_lot', 'product_association', 'entrepot', 'entrepot_extrafields', 'stock_mouvement', 'accounting_account', 'accounting_system', 'accounting_journal', 'accounting_bookkeeping', 'accounting_fiscalyear', 'accounting_bookkeeping_piece', 'facture_fourn', 'facture_fourn_det', 'facture', 'facturedet', 'commande', 'commandedet', 'reception', 'expedition', 'expeditiondet', 'societe', 'user', 'extrafields', 'element_element', 'events', 'const', 'c_units', 'c_country', 'c_revenuestamp', 'overwrite_trans') as $name) {
+	foreach (array('product', 'product_extrafields', 'product_stock', 'product_batch', 'product_lot', 'product_association', 'entrepot', 'entrepot_extrafields', 'stock_mouvement', 'bank', 'accounting_account', 'accounting_system', 'accounting_journal', 'accounting_bookkeeping', 'accounting_fiscalyear', 'accounting_bookkeeping_piece', 'facture_fourn', 'facture_fourn_det', 'facture', 'facturedet', 'commande', 'commandedet', 'reception', 'expedition', 'expeditiondet', 'societe', 'user', 'extrafields', 'element_element', 'events', 'const', 'c_units', 'c_country', 'c_revenuestamp', 'overwrite_trans') as $name) {
 		$target = $fixturePrefix.$name;
 		if (!$sourceDb->query('CREATE TABLE '.$target.' LIKE '.MAIN_DB_PREFIX.$name)) {
 			throw new RuntimeException('Cannot create empty fixture '.$name.': '.$sourceDb->lasterror());
@@ -251,6 +251,15 @@ try {
 	$pi->reviseInvoiceWithLedger($revisionInvoice, $user);
 	near($pi->one('SELECT COUNT(*) n FROM '.$bookkeepingTable." WHERE doc_type='customer_invoice' AND fk_doc=1")->n, 0, 'Invoice revision removes transferred bookkeeping');
 	check($revisionInvoice->status === 0, 'Invoice revision returns document to draft');
+	$pi->q('INSERT INTO '.$pi->table('bank')." (rowid,datev,dateo,amount,label,fk_account,rappro) VALUES (71,CURRENT_DATE,CURRENT_DATE,100,'Payment fixture',1,0),(72,CURRENT_DATE,CURRENT_DATE,100,'Exported payment fixture',1,0),(73,CURRENT_DATE,CURRENT_DATE,100,'Reconciled payment fixture',1,1)");
+	$pi->q('INSERT INTO '.$bookkeepingTable.$baseBookkeeping."(1,906,CURRENT_DATE,'bank','PAY-LOCAL',71,71,NULL,NULL,NULL,'1100','Receivable',0,100,1,'PI'),(1,906,CURRENT_DATE,'bank','PAY-LOCAL',71,71,NULL,NULL,NULL,'1000','Bank',100,0,1,'PI')");
+	$pi->cancelPaymentAccounting('customer', 501, 71);
+	near($pi->one('SELECT COUNT(*) n FROM '.$bookkeepingTable." WHERE doc_type='bank' AND fk_doc=71")->n, 0, 'Payment cancellation removes non-exported transferred bookkeeping');
+	$pi->q('INSERT INTO '.$bookkeepingTable.$baseBookkeeping."(1,907,CURRENT_DATE,'bank','PAY-EXPORTED',72,72,NULL,NULL,NULL,'1100','Receivable',0,100,1,'PI')");
+	$pi->q('UPDATE '.$bookkeepingTable." SET date_export=CURRENT_DATE WHERE doc_type='bank' AND fk_doc=72");
+	fails(function () use ($pi) { $pi->cancelPaymentAccounting('customer', 502, 72); }, 'Exported payment bookkeeping cannot be removed automatically');
+	near($pi->one('SELECT COUNT(*) n FROM '.$bookkeepingTable." WHERE doc_type='bank' AND fk_doc=72")->n, 1, 'Exported payment bookkeeping is preserved');
+	fails(function () use ($pi) { $pi->cancelPaymentAccounting('supplier', 503, 73); }, 'Reconciled payment bank line cannot be canceled');
 	$before = $pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n;
 	fails(function () { nativeMovement(-100, 0, 'shipping'); }, 'Negative stock rejected');
 	near($pi->one('SELECT COUNT(*) n FROM '.$pi->table('pi_entry'))->n, $before, 'Negative stock rolled back');
