@@ -145,6 +145,31 @@ class ActionsPerpetualInventory
 		return $user->hasRight('facture', 'creer');
 	}
 
+	private function canChangeThirdparty($object, $user)
+	{
+		if (!empty($user->socid)) {
+			return false;
+		}
+		if ($user->admin) {
+			return true;
+		}
+		if ($object->element === 'shipping') {
+			return $user->hasRight('expedition', 'creer');
+		}
+		if ($object->element === 'reception') {
+			return $user->hasRight('reception', 'creer');
+		}
+		return $this->canRevise($object, $user);
+	}
+
+	private function printChangeThirdpartyButton($object)
+	{
+		$idKey = $this->invoiceType($object) === 'supplier' && !$this->isStockDocument($object) ? 'id' : ($object->element === 'facture' || $object->element === 'invoice' ? 'facid' : 'id');
+		$url = $_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id.'&action=pi_change_thirdparty&token='.newToken();
+		$label = $this->invoiceType($object) === 'supplier' || $object->element === 'reception' ? 'Ganti Vendor' : 'Ganti Customer';
+		print dolGetButtonAction('Ganti customer/vendor tanpa membuat nomor dokumen baru (khusus Draft)', $label, 'default', $url, '', true);
+	}
+
 	public function addMoreActionsButtons($parameters, &$object, &$action)
 	{
 		global $conf, $langs, $user;
@@ -166,6 +191,7 @@ class ActionsPerpetualInventory
 			// this action on validated documents; pass the current document so the
 			// picker adds items here instead of opening another new document.
 			if ($status === 0 && ($user->admin || $user->hasRight($module, 'creer'))) {
+				$this->printChangeThirdpartyButton($object);
 				$target = $object->element === 'shipping' ? 'shipment' : 'reception';
 				$source = $target === 'shipment' ? $langs->trans('CustomerOrder') : $langs->trans('SupplierOrder');
 				$url = dol_buildpath('/perpetualinventory/get_items_from.php', 1).'?target='.$target.'&destination_id='.(int) $object->id;
@@ -208,6 +234,9 @@ class ActionsPerpetualInventory
 		}
 		$invoiceType = $this->invoiceType($object);
 		$status = isset($object->status) ? (int) $object->status : (int) $object->statut;
+		if ($status === 0 && $this->canChangeThirdparty($object, $user)) {
+			$this->printChangeThirdpartyButton($object);
+		}
 		if ($status === 0 && (int) $object->type === 0 && $this->canRevise($object, $user)) {
 			$target = $invoiceType === 'supplier' ? 'supplier_invoice' : 'customer_invoice';
 			$source = $invoiceType === 'supplier' ? $langs->trans('Reception') : $langs->trans('Shipment');
@@ -258,10 +287,31 @@ class ActionsPerpetualInventory
 
 	public function formConfirm($parameters, &$object, &$action)
 	{
-		global $form;
+		global $form, $langs;
 		$this->resprints = '';
 		$stockActions = array('pi_cancel_shipment', 'pi_cancel_reception', 'pi_amend_shipment', 'pi_amend_reception');
-		if (!in_array($action, array_merge(array('pi_delete_ledger', 'pi_revise_ledger'), $stockActions), true)) {
+		if (!in_array($action, array_merge(array('pi_delete_ledger', 'pi_revise_ledger', 'pi_change_thirdparty'), $stockActions), true)) {
+			return 0;
+		}
+		if ($action === 'pi_change_thirdparty') {
+			$isSupplier = $this->invoiceType($object) === 'supplier' || $object->element === 'reception';
+			$filter = $isSupplier ? '((s.fournisseur:=:1) AND (s.status:=:1))' : '((s.client:IN:1,2,3) AND (s.status:=:1))';
+			$questions = array(array(
+				'type' => 'other',
+				'name' => 'pi_socid',
+				'label' => '<span class="fieldrequired">'.($isSupplier ? $langs->trans('Supplier') : $langs->trans('Customer')).'</span>',
+				'value' => $form->select_company((int) $object->socid, 'pi_socid', $filter, 'SelectThirdParty', 0, 0, array(), 0, 'minwidth300 maxwidth500'),
+			));
+			$idKey = $isSupplier && !$this->isStockDocument($object) ? 'id' : ($object->element === 'facture' || $object->element === 'invoice' ? 'facid' : 'id');
+			$this->resprints = $form->formconfirm(
+				$_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id,
+				$isSupplier ? 'Ganti Vendor' : 'Ganti Customer',
+				'Nomor dokumen <b>'.dol_escape_htmltag($object->ref).'</b> tetap dipertahankan. Perubahan hanya diizinkan selama status masih Draft.',
+				'pi_confirm_change_thirdparty',
+				$questions,
+				'no',
+				1
+			);
 			return 0;
 		}
 		if (in_array($action, $stockActions, true)) {
@@ -306,6 +356,25 @@ class ActionsPerpetualInventory
 	public function doActions($parameters, &$object, &$action)
 	{
 		global $conf, $user;
+		if ($action === 'pi_confirm_change_thirdparty' && GETPOST('confirm', 'alpha') === 'yes') {
+			if (!isModEnabled('perpetualinventory') || !$this->canChangeThirdparty($object, $user)) {
+				$this->error = 'Tidak memiliki izin mengganti customer/vendor dokumen.';
+				return -1;
+			}
+			try {
+				$pi = new PerpetualInventory($this->db, $object->entity ?: $conf->entity);
+				$result = $pi->changeDraftThirdparty($object, GETPOSTINT('pi_socid'), $user);
+				setEventMessages($result === 0 ? 'Customer/vendor tidak berubah.' : 'Customer/vendor berhasil diganti. Nomor dokumen tetap dipertahankan.', null, 'mesgs');
+				$idKey = ($this->invoiceType($object) === 'supplier' && !$this->isStockDocument($object)) ? 'id' : ($object->element === 'facture' || $object->element === 'invoice' ? 'facid' : 'id');
+				header('Location: '.$_SERVER['PHP_SELF'].'?'.$idKey.'='.(int) $object->id);
+				exit;
+			} catch (Throwable $e) {
+				$this->error = $e->getMessage();
+				$this->errors[] = $this->error;
+				$action = '';
+				return -1;
+			}
+		}
 		// The native "New shipment/reception" menu opens the card without an
 		// origin document.  In that case Dolibarr only displays an instruction
 		// telling the user to go back to the order.  Route that entry point to

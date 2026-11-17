@@ -65,7 +65,7 @@ function fails($callback, $label)
 }
 try {
 	// No customer rows are copied. The driver rewrites even core MAIN_DB_PREFIX queries.
-	foreach (array('product', 'product_extrafields', 'product_stock', 'product_batch', 'product_lot', 'product_association', 'entrepot', 'entrepot_extrafields', 'stock_mouvement', 'bank', 'accounting_account', 'accounting_system', 'accounting_journal', 'accounting_bookkeeping', 'accounting_fiscalyear', 'accounting_bookkeeping_piece', 'facture_fourn', 'facture_fourn_det', 'facture', 'facturedet', 'commande', 'commandedet', 'reception', 'expedition', 'expeditiondet', 'societe', 'user', 'extrafields', 'element_element', 'events', 'const', 'c_units', 'c_country', 'c_revenuestamp', 'overwrite_trans') as $name) {
+	foreach (array('product', 'product_extrafields', 'product_stock', 'product_batch', 'product_lot', 'product_association', 'entrepot', 'entrepot_extrafields', 'stock_mouvement', 'bank', 'accounting_account', 'accounting_system', 'accounting_journal', 'accounting_bookkeeping', 'accounting_fiscalyear', 'accounting_bookkeeping_piece', 'facture_fourn', 'facture_fourn_det', 'facture', 'facturedet', 'commande', 'commandedet', 'commande_fournisseur', 'reception', 'expedition', 'expeditiondet', 'societe', 'user', 'extrafields', 'element_element', 'events', 'const', 'c_units', 'c_country', 'c_revenuestamp', 'overwrite_trans') as $name) {
 		$target = $fixturePrefix.$name;
 		if (!$sourceDb->query('CREATE TABLE '.$target.' LIKE '.MAIN_DB_PREFIX.$name)) {
 			throw new RuntimeException('Cannot create empty fixture '.$name.': '.$sourceDb->lasterror());
@@ -187,7 +187,34 @@ try {
 	near($pi->balance(10, 1)->stock_value, 80000, 'Historical Reception cancellation replays later valuation');
 	nativeMovement(-2, 0, 'reception', 10, 1, 11);
 	near($pi->balance(10, 1)->qty, 0, 'Later Reception fixture cleanup restores zero quantity');
-	$pi->q('INSERT INTO '.$pi->table('societe')." (rowid,entity,nom) VALUES (1,1,'Fixture Customer')");
+	$pi->q('INSERT INTO '.$pi->table('societe')." (rowid,entity,nom,client,fournisseur,status) VALUES (1,1,'Fixture Customer',1,1,1),(2,1,'Replacement Party',1,1,1)");
+	$pi->q('INSERT INTO '.$pi->table('facture')." (rowid,entity,ref,fk_soc,datef,fk_statut,type) VALUES (50,1,'DRAFT-NUMBER-KEPT',1,CURRENT_DATE,0,0)");
+	$draftInvoice = (object) array('element' => 'facture', 'id' => 50, 'socid' => 1, 'fk_soc' => 1);
+	check($pi->changeDraftThirdparty($draftInvoice, 2, $user) === 1, 'Draft customer invoice accepts a different customer');
+	$changedDraft = $pi->one('SELECT ref,fk_soc FROM '.$pi->table('facture').' WHERE rowid=50');
+	check($changedDraft->ref === 'DRAFT-NUMBER-KEPT' && (int) $changedDraft->fk_soc === 2, 'Changing customer preserves the draft invoice number');
+	$pi->q('UPDATE '.$pi->table('facture').' SET fk_statut=1 WHERE rowid=50');
+	fails(function () use ($pi, $draftInvoice, $user) { $pi->changeDraftThirdparty($draftInvoice, 1, $user); }, 'Validated invoice customer cannot be changed');
+	$pi->q('DELETE FROM '.$pi->table('facture').' WHERE rowid=50');
+
+	$pi->q('INSERT INTO '.$pi->table('facture_fourn')." (rowid,entity,ref,ref_supplier,fk_soc,datef,fk_statut,type) VALUES (50,1,'DRAFT-SUPPLIER-KEPT','VENDOR-DRAFT',1,CURRENT_DATE,0,0)");
+	$draftSupplierInvoice = (object) array('element' => 'facture_fourn', 'id' => 50, 'socid' => 1, 'fk_soc' => 1);
+	check($pi->changeDraftThirdparty($draftSupplierInvoice, 2, $user) === 1, 'Draft supplier invoice accepts a different vendor');
+	check((int) $pi->one('SELECT fk_soc FROM '.$pi->table('facture_fourn').' WHERE rowid=50')->fk_soc === 2, 'Supplier invoice vendor change is persisted');
+	$pi->q('DELETE FROM '.$pi->table('facture_fourn').' WHERE rowid=50');
+
+	$pi->q('INSERT INTO '.$pi->table('expedition')." (rowid,entity,ref,fk_soc,fk_statut) VALUES (50,1,'SHIP-DRAFT-KEPT',1,0)");
+	$draftShipment = (object) array('element' => 'shipping', 'id' => 50, 'socid' => 1, 'fk_soc' => 1);
+	check($pi->changeDraftThirdparty($draftShipment, 2, $user) === 1, 'Draft shipment accepts a different customer');
+	check((int) $pi->one('SELECT fk_soc FROM '.$pi->table('expedition').' WHERE rowid=50')->fk_soc === 2, 'Shipment customer change is persisted');
+	$pi->q('DELETE FROM '.$pi->table('expedition').' WHERE rowid=50');
+
+	$pi->q('INSERT INTO '.$pi->table('reception')." (rowid,entity,ref,fk_soc,fk_statut) VALUES (50,1,'RECEPTION-DRAFT-KEPT',1,0)");
+	$draftReception = (object) array('element' => 'reception', 'id' => 50, 'socid' => 1, 'fk_soc' => 1);
+	check($pi->changeDraftThirdparty($draftReception, 2, $user) === 1, 'Draft reception accepts a different vendor');
+	check((int) $pi->one('SELECT fk_soc FROM '.$pi->table('reception').' WHERE rowid=50')->fk_soc === 2, 'Reception vendor change is persisted');
+	$pi->q('DELETE FROM '.$pi->table('reception').' WHERE rowid=50');
+
 	$pi->q('INSERT INTO '.$pi->table('commande')." (rowid,entity,ref,fk_soc,date_commande,fk_statut) VALUES (1,1,'SO-TEST',1,CURRENT_DATE,1)");
 	$pi->q('INSERT INTO '.$pi->table('commandedet')." (rowid,fk_commande,fk_product,qty,subprice,total_ht,product_type) VALUES (1,1,1,3,200000,600000,0)");
 	$pi->q('INSERT INTO '.$pi->table('expeditiondet')." (rowid,fk_expedition,fk_elementdet,element_type,fk_product,qty,fk_entrepot) VALUES (1,1,1,'commande',1,3,1)");

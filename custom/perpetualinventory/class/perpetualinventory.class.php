@@ -608,6 +608,99 @@ class PerpetualInventory
 		}
 	}
 
+	/** Change the customer/vendor of a draft document without consuming a new reference. */
+	public function changeDraftThirdparty($object, $newSocId, $user)
+	{
+		$definitions = array(
+			'facture' => array('table' => 'facture', 'party' => 'customer', 'trigger' => 'BILL_MODIFY'),
+			'invoice' => array('table' => 'facture', 'party' => 'customer', 'trigger' => 'BILL_MODIFY'),
+			'facture_fourn' => array('table' => 'facture_fourn', 'party' => 'supplier', 'trigger' => 'BILL_SUPPLIER_MODIFY'),
+			'invoice_supplier' => array('table' => 'facture_fourn', 'party' => 'supplier', 'trigger' => 'BILL_SUPPLIER_MODIFY'),
+			'shipping' => array('table' => 'expedition', 'party' => 'customer', 'trigger' => 'SHIPPING_MODIFY'),
+			'reception' => array('table' => 'reception', 'party' => 'supplier', 'trigger' => 'RECEPTION_MODIFY'),
+		);
+		$element = isset($object->element) ? (string) $object->element : '';
+		if (!isset($definitions[$element]) || (int) $object->id <= 0 || (int) $newSocId <= 0) {
+			throw new DomainException('Dokumen atau pihak ketiga tidak valid.');
+		}
+		$definition = $definitions[$element];
+		$oldSocId = (int) ($object->socid ?? 0);
+
+		try {
+			return $this->transaction(function () use ($object, $newSocId, $user, $definition, $element) {
+				$document = $this->one('SELECT rowid,fk_soc,fk_statut,fk_projet FROM '.$this->table($definition['table']).' WHERE entity='.$this->entity.' AND rowid='.(int) $object->id.' FOR UPDATE');
+				if (!$document) {
+					throw new DomainException('Dokumen tidak ditemukan pada entitas aktif.');
+				}
+				if ((int) $document->fk_statut !== 0) {
+					throw new DomainException('Customer/vendor hanya dapat diganti ketika dokumen masih Draft.');
+				}
+				$roleCondition = $definition['party'] === 'supplier' ? 'fournisseur=1' : 'client IN (1,2,3)';
+				$thirdparty = $this->one('SELECT rowid,nom FROM '.$this->table('societe').' WHERE entity IN ('.getEntity('societe').') AND status=1 AND '.$roleCondition.' AND rowid='.(int) $newSocId);
+				if (!$thirdparty) {
+					throw new DomainException($definition['party'] === 'supplier' ? 'Vendor aktif tidak ditemukan.' : 'Customer aktif tidak ditemukan.');
+				}
+				if ((int) $document->fk_soc === (int) $newSocId) {
+					return 0;
+				}
+
+				if (!empty($document->fk_projet)) {
+					$project = $this->one('SELECT fk_soc FROM '.$this->table('projet').' WHERE rowid='.(int) $document->fk_projet);
+					if ($project && (int) $project->fk_soc > 0 && (int) $project->fk_soc !== (int) $newSocId) {
+						throw new DomainException('Project pada dokumen masih terhubung ke customer/vendor lama. Lepaskan atau ganti project terlebih dahulu.');
+					}
+				}
+
+				$linkDefinitions = array(
+					'facture' => array('shipping', 'expedition', 'facture'),
+					'invoice' => array('shipping', 'expedition', 'facture'),
+					'facture_fourn' => array('reception', 'reception', 'invoice_supplier'),
+					'invoice_supplier' => array('reception', 'reception', 'invoice_supplier'),
+					'shipping' => array('commande', 'commande', 'shipping'),
+					'reception' => array('order_supplier', 'commande_fournisseur', 'reception'),
+				);
+				if (isset($linkDefinitions[$element])) {
+					$link = $linkDefinitions[$element];
+					$mismatch = $this->one('SELECT ee.rowid FROM '.$this->table('element_element').' ee JOIN '.$this->table($link[1]).' src ON src.rowid=ee.fk_source WHERE ee.sourcetype='.$this->str($link[0]).' AND ee.targettype='.$this->str($link[2]).' AND ee.fk_target='.(int) $object->id.' AND src.fk_soc<>'.(int) $newSocId.' LIMIT 1');
+					if ($mismatch) {
+						throw new DomainException('Dokumen masih terhubung ke dokumen sumber milik customer/vendor lama. Hapus baris atau tautan sumber tersebut terlebih dahulu.');
+					}
+				}
+
+				if ($definition['table'] === 'facture_fourn') {
+					$mismatch = $this->one('SELECT m.rowid FROM '.$this->table('pi_match').' m JOIN '.$this->table('pi_entry').' pe ON pe.rowid=m.fk_entry AND pe.entity=m.entity JOIN '.$this->table('reception').' r ON r.rowid=pe.origin_id AND r.entity=pe.entity WHERE m.entity='.$this->entity.' AND m.fk_invoice='.(int) $object->id.' AND r.fk_soc<>'.(int) $newSocId.' LIMIT 1');
+					if ($mismatch) {
+						throw new DomainException('Vendor tidak dapat diganti karena tagihan sudah dicocokkan dengan reception vendor lama. Batalkan pencocokan terlebih dahulu.');
+					}
+				}
+
+				$updateResult = $this->q('UPDATE '.$this->table($definition['table']).' SET fk_soc='.(int) $newSocId.',fk_user_modif='.(int) $user->id.' WHERE rowid='.(int) $object->id.' AND entity='.$this->entity.' AND fk_statut=0');
+				if ((int) $this->db->affected_rows($updateResult) !== 1) {
+					throw new RuntimeException('Customer/vendor gagal diperbarui karena status dokumen telah berubah.');
+				}
+
+				$object->socid = (int) $newSocId;
+				$object->fk_soc = (int) $newSocId;
+				$object->thirdparty = null;
+				if (method_exists($object, 'fetch_thirdparty')) {
+					$object->fetch_thirdparty();
+				}
+				if (method_exists($object, 'call_trigger')) {
+					$result = $object->call_trigger($definition['trigger'], $user);
+					if ($result < 0) {
+						throw new RuntimeException($object->error ?: 'Trigger perubahan dokumen gagal.');
+					}
+				}
+				return 1;
+			});
+		} catch (Throwable $e) {
+			$object->socid = $oldSocId;
+			$object->fk_soc = $oldSocId;
+			$object->thirdparty = null;
+			throw $e;
+		}
+	}
+
 	/** Delete accounting dispatch for a canceled/deleted invoice and release PI receipt matches. */
 	public function cancelInvoiceAccounting($invoiceType, $invoiceId)
 	{
