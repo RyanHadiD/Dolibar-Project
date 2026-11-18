@@ -233,8 +233,9 @@ class PerpetualInventory
 	public function checkDate($date, $c, $b, $allowHistorical = false)
 	{
 		$stamp = $this->db->idate($date);
-		$beforeLedger = ($c->enabled && $stamp < $c->start_date) || ($b->last_date && $stamp < $b->last_date);
-		if (!$date || $date > dol_now() + 60 || ($c->lock_date && substr($stamp, 0, 10) <= $c->lock_date) || (!$allowHistorical && $beforeLedger)) {
+		$beforeStart = $c->enabled && $c->start_date && $stamp < $c->start_date;
+		$beforeLastEntry = $b->last_date && $stamp < $b->last_date;
+		if (!$date || $date > dol_now() + 60 || $beforeStart || ($c->lock_date && substr($stamp, 0, 10) <= $c->lock_date) || (!$allowHistorical && $beforeLastEntry)) {
 			throw new DomainException('Tanggal transaksi terkunci, mundur, atau di masa depan.');
 		}
 	}
@@ -1079,6 +1080,8 @@ class PerpetualInventory
 					if ($closed) {
 						throw new DomainException('Valuasi PI-'.$entry->rowid.' berubah tetapi periode akuntansinya sudah ditutup.');
 					}
+					$journalWhere = 'entity='.$this->entity.' AND ((doc_type='.$this->str('perpetualinventory').' AND fk_doc='.(int) $entry->rowid.') OR (doc_type IN ('.$this->str('reception').','.$this->str('shipment').','.$this->str('stock_entry').') AND fk_docdet='.(int) $entry->rowid.'))';
+					$this->assertAccountingRowsReversible($journalWhere, 'Jurnal transaksi setelah backdate');
 					$changedJournals[] = array($entry, $v['delta']);
 				}
 				$states[$key] = array('qty' => $v['qty'], 'value' => $v['value']);
@@ -1199,8 +1202,13 @@ class PerpetualInventory
 				}
 				$this->productWarehouse($product, $warehouse);
 				$b = $this->balance($product, $warehouse);
+				$ledgerQty = (float) $b->qty;
+				if ($stockEntryId && $postingDate) {
+					$historical = $this->one('SELECT COALESCE(SUM(qty),0) qty FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_product='.(int) $product.' AND fk_warehouse='.(int) $warehouse.' AND date_post<='.$this->str($this->db->idate($postingDate)));
+					$ledgerQty = (float) $historical->qty;
+				}
 				$note = 'Opname '.(float) $qty.': '.$note;
-				$qty = round($qty - $b->qty, 8);
+				$qty = round($qty - $ledgerQty, 8);
 				$kind = 'adjustment';
 				if ($qty == 0) {
 					throw new DomainException('Jumlah fisik sama dengan saldo; tidak ada penyesuaian untuk diposting.');
@@ -1220,7 +1228,7 @@ class PerpetualInventory
 			if ($stockEntryId) {
 				$ctx['stock_entry_id'] = (int) $stockEntryId;
 				$ctx['posting_date'] = $postingDate ?: dol_now();
-				$ctx['allow_historical'] = false;
+				$ctx['allow_historical'] = true;
 			}
 			if ($kind === 'opening') {
 				if ($qty <= 0 || $cost === null || !is_finite((float) $cost) || $cost < 0) {
@@ -1311,6 +1319,11 @@ class PerpetualInventory
 			}
 			$accountingPurposes = array('material_receipt', 'material_issue', 'count', 'adjustment');
 			$postingDate = $this->db->jdate($document->date_post);
+			$closed = $this->one('SELECT rowid FROM '.$this->table('accounting_fiscalyear').' WHERE entity='.$this->entity.' AND statut=1 AND '.$this->str(substr($document->date_post, 0, 10)).' BETWEEN date_start AND date_end LIMIT 1');
+			if ($closed) {
+				throw new DomainException('Tanggal Stock Entry berada pada periode akuntansi yang sudah ditutup.');
+			}
+			$requiresReplay = (bool) $this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND date_post>'.$this->str($document->date_post).' LIMIT 1');
 			$ids = array();
 			foreach ($lines as $index => $line) {
 				if (in_array($document->purpose, $accountingPurposes, true) && trim((string) $line->difference_account) === '') {
@@ -1321,6 +1334,11 @@ class PerpetualInventory
 				$target = $this->one('SELECT rowid FROM '.$this->table('pi_entry').' WHERE entity='.$this->entity.' AND fk_source='.(int) $entryId." AND kind='transfer_in' ORDER BY rowid DESC LIMIT 1");
 				$this->q('UPDATE '.$this->table('pi_stock_entry_line').' SET fk_pi_entry='.(int) $entryId.',fk_pi_entry_target='.(int) ($target ? $target->rowid : 0).' WHERE rowid='.(int) $line->rowid.' AND fk_stock_entry='.(int) $documentId);
 				$ids[] = $entryId;
+			}
+			if ($requiresReplay) {
+				// Native movements update today's stock first. Replay restores the
+				// chronological moving-average balances and affected journals.
+				$this->recalculateValuation($user, false, true);
 			}
 			$validationStamp = $this->db->idate(dol_now());
 			$this->q('UPDATE '.$this->table('pi_stock_entry').' SET status=1,date_valid='.$this->str($validationStamp).',fk_user_valid='.(int) $user->id.' WHERE entity='.$this->entity.' AND rowid='.(int) $documentId);

@@ -9,8 +9,9 @@ penyesuaian, retur, atau pembalik. Setiap baris menyimpan tautan ke Stock Ledger
 yang dihasilkan dan dapat memakai Difference Account tersendiri.
 
 Posting Date dan Posting Time dipilih pada Draft lalu dipertahankan saat
-validasi. Tanggal masa depan, periode terkunci, dan tanggal yang lebih awal dari
-ledger terakhir barang/gudang tetap ditolak. Administrator dapat mengatur seri
+validasi. Stock Entry boleh memakai tanggal transaksi sebelumnya; valuasi moving
+average dan jurnal setelahnya dihitung ulang otomatis. Tanggal masa depan, periode
+terkunci, dan tanggal sebelum awal buku tetap ditolak. Administrator dapat mengatur seri
 nomor melalui **Perpetual Inventory → Pengaturan → Format nomor Stock Entry**.
 Format bawaan `STE-{YYYY}-{ID:7}`; token yang tersedia adalah `{YYYY}`, `{YY}`,
 `{MM}`, `{DD}`, dan `{ID:n}` (panjang 1–12 digit). Nomor memakai ID database,
@@ -77,7 +78,7 @@ Menu utama **Daily Report** memakai hak akses laporan keuangan yang sama dan ber
 - **Stock Ledger** dan **Stock Balance** berada di menu utama tersendiri bernama **Laporan Stok**, terpisah dari proses dan konfigurasi Perpetual Inventory.
 - **Stock Ledger** menampilkan transaksi rinci menurut periode, barang, gudang, dan jenis transaksi: voucher sumber, incoming/outgoing quantity, incoming rate, perubahan nilai, saldo berjalan, valuation rate, saldo nilai, dan status jurnal. Voucher Reception/Shipment dapat dibuka langsung dan hasil diekspor sebagai workbook Excel `.xlsx` native.
 - **Stock Balance** menampilkan ringkasan per barang/gudang: opening quantity/value, in quantity/value, out quantity/value, balance quantity, valuation rate, balance value, dan waktu pergerakan terakhir. Klik barang untuk drill-down ke Stock Ledger dengan filter yang sama.
-- Opening memakai seluruh ledger sebelum tanggal awal; closing memakai seluruh ledger sampai akhir tanggal akhir. Karena buku stok append-only dan transaksi mundur ditolak, laporan historis tetap konsisten dengan saldo yang tersimpan.
+- Opening memakai seluruh ledger sebelum tanggal awal; closing memakai seluruh ledger sampai akhir tanggal akhir. Stock Entry backdate memicu replay kronologis, sehingga laporan historis tetap konsisten dengan saldo yang tersimpan.
 
 ## Peta dokumen ERPNext dan Dolibarr
 
@@ -131,7 +132,7 @@ Stock Entry memakai alur **Draft → Posted → Cancelled → Delete**. Cancel m
 - **Cancel/Delete/Modify Reception atau Shipment:** Dolibarr atau modul membuat gerakan stok lawan, lalu modul menghapus entri buku stok dan jurnal PI asal secara atomik. Aksi Modify mengembalikan dokumen ke draft agar barisnya dapat direvisi. Alasan cancel/revisi wajib diisi dan disimpan pada `pi_document_action`. Jika ada transaksi stok yang lebih baru, moving-average dan jurnal transaksi berikutnya dihitung ulang dalam transaksi database yang sama. Reception yang sudah dicocokkan ke Vendor Invoice atau dokumen yang memiliki retur/pembalik turunan tetap harus menyelesaikan dokumen turunannya lebih dahulu.
 - **Cancel/Unvalidate Invoice:** jurnal buku besar invoice dihapus otomatis. Untuk invoice yang sudah masuk bookkeeping dan tombol Modify/Delete native terkunci, gunakan **Revisi + Ledger** untuk kembali ke draft atau **Hapus + Ledger** untuk menghapusnya. Invoice yang memiliki pembayaran harus membatalkan/menghapus pembayarannya lebih dahulu.
 - **Pembalik manual:** hanya untuk penerimaan, pengiriman, atau penyesuaian terakhir pada barang/gudang; belum pernah diretur/dicocokkan. Membuat jurnal pembalik baru dan mempertahankan dokumen asal sebagai jejak audit. Transfer dan saldo awal belum menyediakan pembalik otomatis.
-- Semua operasi manual menggunakan waktu posting saat ini. Tanggal mundur, tanggal masa depan, periode akuntansi tertutup, dan tanggal kunci ditolak. Draft ulang Shipment yang sudah membentuk ledger otomatis membuat gerakan stok lawan terlebih dahulu, sehingga dokumen dapat diedit dan divalidasi kembali tanpa menggandakan stok/HPP.
+- Stock Entry memakai tanggal dan waktu posting yang dipilih. Backdate diperbolehkan dan memicu hitung ulang valuasi/jurnal berikutnya; tanggal masa depan, sebelum awal buku, periode akuntansi tertutup, dan tanggal kunci tetap ditolak. Draft ulang Shipment yang sudah membentuk ledger otomatis membuat gerakan stok lawan terlebih dahulu, sehingga dokumen dapat diedit dan divalidasi kembali tanpa menggandakan stok/HPP.
 
 ## Batas versi ini
 

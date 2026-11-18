@@ -331,6 +331,29 @@ try {
 	$maskTimestamp = dol_mktime(12, 0, 0, 5, 6, 2025);
 	check(PiStockEntry::formatReference('ST-{YYYY}{MM}{DD}-{ID:5}', 12, $maskTimestamp) === 'ST-20250506-00012', 'Stock Entry numbering mask expands date and padded ID tokens');
 	fails(function () { PiStockEntry::validateNumberMask('STE-{YYYY}'); }, 'Stock Entry numbering mask requires a unique ID token');
+	$backdateDocumentId = $stockEntryService->saveDraft(0, 'material_receipt', 'Backdated receipt document', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 0, 'qty' => 1, 'cost' => 200000, 'account' => '5100', 'source' => 0, 'note' => 'Historical receipt'),
+	), $user, date('Y-m-d', strtotime('-2 days')), '12:00:00');
+	$pi->postStockEntry($backdateDocumentId, $user);
+	$backdateDocument = $stockEntryService->fetch($backdateDocumentId);
+	$backdateEntry = $pi->one('SELECT date_post FROM '.$pi->table('pi_entry').' WHERE rowid='.(int) $backdateDocument->lines[0]->fk_pi_entry);
+	check((int) $backdateDocument->status === 1 && substr($backdateEntry->date_post, 0, 10) === date('Y-m-d', strtotime('-2 days')), 'Backdated Stock Entry posts on its selected historical date');
+	near($pi->balance(1, 1)->qty, $beforeMain + 1, 'Backdated Stock Entry preserves current quantity after chronological replay');
+	near($pi->reconciliation()['difference'], 0, 'Backdated Stock Entry replay keeps inventory and GL reconciled');
+	$pi->cancelStockEntry($backdateDocumentId, 'Clean up backdate fixture', $user);
+	$stockEntryService->deleteDraft($backdateDocumentId, $user);
+	near($pi->balance(1, 1)->qty, $beforeMain, 'Canceling backdated Stock Entry restores current quantity');
+	$backdateCountId = $stockEntryService->saveDraft(0, 'count', 'Backdated stock reconciliation', array(
+		array('product' => 1, 'warehouse' => 1, 'target' => 0, 'qty' => 1, 'cost' => 100000, 'account' => '5100', 'source' => 0, 'note' => 'Historical physical count'),
+	), $user, date('Y-m-d', strtotime('-2 days')), '13:00:00');
+	$pi->postStockEntry($backdateCountId, $user);
+	$backdateCount = $stockEntryService->fetch($backdateCountId);
+	$backdateCountEntry = $pi->one('SELECT qty FROM '.$pi->table('pi_entry').' WHERE rowid='.(int) $backdateCount->lines[0]->fk_pi_entry);
+	near($backdateCountEntry->qty, 1, 'Backdated Stock Reconciliation uses quantity at posting time instead of current quantity');
+	near($pi->balance(1, 1)->qty, $beforeMain + 1, 'Backdated Stock Reconciliation replays into the current balance');
+	$pi->cancelStockEntry($backdateCountId, 'Clean up historical count fixture', $user);
+	$stockEntryService->deleteDraft($backdateCountId, $user);
+	near($pi->balance(1, 1)->qty, $beforeMain, 'Canceling historical Stock Reconciliation restores current quantity');
 	$receiptDocumentId = $stockEntryService->saveDraft(0, 'material_receipt', 'Multi item receipt document', array(
 		array('product' => 1, 'warehouse' => 1, 'target' => 0, 'qty' => 1, 'cost' => 100000, 'account' => '5100', 'source' => 0, 'note' => 'Main receipt'),
 		array('product' => 1, 'warehouse' => 2, 'target' => 0, 'qty' => 1, 'cost' => 100000, 'account' => '5100', 'source' => 0, 'note' => 'Second receipt'),
