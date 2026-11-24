@@ -148,6 +148,7 @@ class PrintFormatDocumentGenerator
 		$renderer = new PrintFormatRenderer();
 		$context = $renderer->contextForObject($object, $outputlangs, $doctype);
 		$rendered = $renderer->render((string) $format->template_html, $context, $outputlangs);
+		$rendered = PrintFormatRemoteImageLoader::embed($rendered);
 		$reference = (string) ($object->ref ?? $object->code ?? $object->login ?? $object->label ?? $object->id);
 		$reference = dol_sanitizeFileName($reference !== '' ? $reference : (string) $object->id);
 
@@ -227,5 +228,122 @@ class PrintFormatDocumentGenerator
 			return rtrim((string) $root, '/').'/asset';
 		}
 		return getMultidirOutput($object);
+	}
+}
+
+/** Download HTTPS images once and embed them so TCPDF does not depend on URL wrappers. */
+class PrintFormatRemoteImageLoader
+{
+	const MAX_BYTES = 2000000;
+	const MAX_REDIRECTS = 3;
+
+	public static function embed($html)
+	{
+		$cache = array();
+		return preg_replace_callback('/(\s+src\s*=\s*)(["\'])(https:\/\/.*?)\2/is', function ($match) use (&$cache) {
+			$url = html_entity_decode(trim($match[3]), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+			if (!isset($cache[$url])) {
+				$cache[$url] = self::download($url);
+			}
+			return $match[1].$match[2].$cache[$url].$match[2];
+		}, (string) $html);
+	}
+
+	private static function download($url)
+	{
+		if (!function_exists('curl_init')) {
+			throw new RuntimeException('Ekstensi PHP cURL diperlukan untuk memuat gambar HTTPS pada Print Format.');
+		}
+		for ($redirects = 0; $redirects <= self::MAX_REDIRECTS; $redirects++) {
+			$target = self::validatePublicHttpsUrl($url);
+			$body = '';
+			$headers = array();
+			$ch = curl_init($url);
+			$options = array(
+				CURLOPT_RETURNTRANSFER => false,
+				CURLOPT_FOLLOWLOCATION => false,
+				CURLOPT_CONNECTTIMEOUT => 5,
+				CURLOPT_TIMEOUT => 15,
+				CURLOPT_SSL_VERIFYPEER => true,
+				CURLOPT_SSL_VERIFYHOST => 2,
+				CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+				CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+				CURLOPT_USERAGENT => 'Dolibarr Print Format Image Loader',
+				CURLOPT_RESOLVE => array($target['resolve']),
+				CURLOPT_HEADERFUNCTION => function ($handle, $line) use (&$headers) {
+					$length = strlen($line);
+					if (strpos($line, ':') !== false) {
+						list($name, $value) = explode(':', $line, 2);
+						$headers[strtolower(trim($name))] = trim($value);
+					}
+					return $length;
+				},
+				CURLOPT_WRITEFUNCTION => function ($handle, $chunk) use (&$body) {
+					if (strlen($body) + strlen($chunk) > self::MAX_BYTES) return 0;
+					$body .= $chunk;
+					return strlen($chunk);
+				},
+			);
+			curl_setopt_array($ch, $options);
+			$ok = curl_exec($ch);
+			$status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+			$error = curl_error($ch);
+			curl_close($ch);
+
+			if ($status >= 300 && $status < 400 && !empty($headers['location'])) {
+				if ($redirects === self::MAX_REDIRECTS) throw new RuntimeException('Redirect gambar terlalu banyak: '.$url);
+				$url = self::redirectUrl($url, $headers['location']);
+				continue;
+			}
+			if (!$ok || $status < 200 || $status >= 300) {
+				throw new RuntimeException('Gambar Print Format gagal dimuat (HTTP '.$status.'): '.$url.($error !== '' ? ' '.$error : ''));
+			}
+			if ($body === '' || strlen($body) > self::MAX_BYTES) {
+				throw new RuntimeException('Gambar Print Format kosong atau melebihi batas 2 MB: '.$url);
+			}
+			$mime = self::imageMime($body);
+			return 'data:'.$mime.';base64,'.base64_encode($body);
+		}
+		throw new RuntimeException('Gambar Print Format gagal dimuat: '.$url);
+	}
+
+	private static function validatePublicHttpsUrl($url)
+	{
+		if (!filter_var($url, FILTER_VALIDATE_URL)) throw new DomainException('URL gambar Print Format tidak valid: '.$url);
+		$parts = parse_url($url);
+		if (strtolower((string) ($parts['scheme'] ?? '')) !== 'https' || empty($parts['host']) || !empty($parts['user']) || !empty($parts['pass']) || (!empty($parts['port']) && (int) $parts['port'] !== 443)) {
+			throw new DomainException('Gambar Print Format hanya boleh memakai URL HTTPS publik pada port 443.');
+		}
+		$host = strtolower(rtrim((string) $parts['host'], '.'));
+		$ips = filter_var($host, FILTER_VALIDATE_IP) ? array($host) : gethostbynamel($host);
+		if (!$ips) throw new RuntimeException('Host gambar Print Format tidak dapat ditemukan: '.$host);
+		foreach ($ips as $ip) {
+			if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+				return array('resolve' => $host.':443:'.$ip);
+			}
+		}
+		throw new DomainException('URL gambar Print Format harus mengarah ke server internet publik.');
+	}
+
+	private static function redirectUrl($base, $location)
+	{
+		$location = trim((string) $location);
+		if (preg_match('#^https://#i', $location)) return $location;
+		if (strpos($location, '//') === 0) return 'https:'.$location;
+		$parts = parse_url($base);
+		$origin = 'https://'.$parts['host'];
+		if (substr($location, 0, 1) === '/') return $origin.$location;
+		$path = (string) ($parts['path'] ?? '/');
+		return $origin.substr($path, 0, strrpos($path, '/') + 1).$location;
+	}
+
+	private static function imageMime($body)
+	{
+		$info = @getimagesizefromstring($body);
+		$mime = strtolower((string) ($info['mime'] ?? ''));
+		if (!in_array($mime, array('image/png', 'image/jpeg', 'image/gif'), true)) {
+			throw new DomainException('URL Print Format bukan gambar PNG, JPEG, atau GIF yang valid.');
+		}
+		return $mime;
 	}
 }

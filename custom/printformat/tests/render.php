@@ -21,6 +21,11 @@ function pfCheck($condition, $message)
 }
 
 $renderer = new PrintFormatRenderer();
+$repository = new PrintFormat($db, (int) $conf->entity);
+$sanitizeHtml = new ReflectionMethod($repository, 'sanitizeHtml');
+$remoteImageHtml = $sanitizeHtml->invoke($repository, '<img src="https://static.example.com/logo.png" alt="Logo"><img src="http://static.example.com/insecure.png"><img src="javascript:alert(1)">');
+pfCheck(strpos($remoteImageHtml, 'src="https://static.example.com/logo.png"') !== false, 'HTTPS image URLs are preserved when a template is saved');
+pfCheck(strpos($remoteImageHtml, 'http://') === false && strpos($remoteImageHtml, 'javascript:') === false, 'insecure image URLs are removed when a template is saved');
 $customDimensions = PrintFormatDocumentGenerator::pageDimensions((object) array('page_format' => 'CUSTOM', 'custom_width' => 100.5, 'custom_height' => 200.25));
 pfCheck($customDimensions === array(100.5, 200.25), 'custom PDF page dimensions are preserved');
 foreach (PrintFormatDoctypeRegistry::all() as $doctype => $definition) {

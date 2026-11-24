@@ -504,7 +504,7 @@ class PrintFormat
 		$html = preg_replace('/\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $html);
 		$html = preg_replace_callback('/\s+src\s*=\s*(["\'])(.*?)\1/is', function ($match) {
 			$source = trim($match[2]);
-			if ($source === '{{ company.logo }}' || preg_match('#^data:image/(?:png|jpeg|gif);base64,#i', $source)) {
+			if ($source === '{{ company.logo }}' || preg_match('#^data:image/(?:png|jpeg|gif);base64,#i', $source) || $this->isAllowedRemoteImageUrl($source)) {
 				return ' src='.$match[1].$source.$match[1];
 			}
 			return '';
@@ -514,6 +514,16 @@ class PrintFormat
 		}, $html);
 		$html = preg_replace('/javascript\s*:/i', '', $html);
 		return $html;
+	}
+
+	/** Remote template images are fetched and embedded by the PDF generator. */
+	private function isAllowedRemoteImageUrl($source)
+	{
+		if (!preg_match('#^https://#i', (string) $source) || !filter_var($source, FILTER_VALIDATE_URL)) {
+			return false;
+		}
+		$parts = parse_url($source);
+		return !empty($parts['host']) && empty($parts['user']) && empty($parts['pass']) && (empty($parts['port']) || (int) $parts['port'] === 443);
 	}
 
 	private function sanitizeCss($css)
