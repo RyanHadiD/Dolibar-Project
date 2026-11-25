@@ -20,7 +20,7 @@ function nsPost($right)
 {
 	global $user;
 	if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !GETPOST('token', 'alpha') || !hash_equals((string) ($_SESSION['token'] ?? ''), GETPOST('token', 'alpha'))) accessforbidden('Permintaan atau token tidak valid.');
-	if (!$user->hasRight('namingseries', $right)) accessforbidden();
+	if (!$user->admin && !$user->hasRight('namingseries', $right)) accessforbidden();
 }
 function nsToken($action)
 {

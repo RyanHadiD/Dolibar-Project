@@ -12,13 +12,18 @@ class modNamingSeries extends DolibarrModules
 		$this->family = 'technic';
 		$this->name = 'NamingSeries';
 		$this->description = 'Flexible document naming series with period-scoped counters';
-		$this->version = '0.4.0';
+		$this->version = '0.5.0';
 		$this->const_name = 'MAIN_MODULE_NAMINGSERIES';
 		$this->picto = 'barcode';
 		$this->phpmin = array(7, 4);
 		$this->need_dolibarr_version = array(24, 0);
 		$this->depends = array('modSociete');
-		$this->module_parts = array('models' => 1);
+		$this->module_parts = array(
+			'models' => 1,
+			'triggers' => 1,
+			'js' => array('/namingseries/js/rename-button.js.php'),
+			'hooks' => array('globalcard'),
+		);
 		$this->config_page_url = array('setup.php@namingseries');
 		$this->langfiles = array('namingseries@namingseries');
 		$this->dirs = array();

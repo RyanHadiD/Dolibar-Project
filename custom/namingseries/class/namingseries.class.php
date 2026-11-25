@@ -112,16 +112,91 @@ class NamingSeries
 	public function resolveSeries($documentType, $object = null)
 	{
 		$requested = '';
+		$requestedId = 0;
 		if (is_object($object)) {
 			if (!empty($object->naming_series_code)) $requested = (string) $object->naming_series_code;
 			if (!$requested && !empty($object->array_options['options_naming_series'])) $requested = (string) $object->array_options['options_naming_series'];
+			if (!$requested && !empty($object->id)) {
+				$choice = $this->documentChoice($documentType, (int) $object->id);
+				if ($choice) $requestedId = (int) $choice->fk_series;
+			}
 		}
 		$sql = 'SELECT * FROM '.$this->table('ns_series').' WHERE entity='.$this->entity
 			." AND document_type='".$this->db->escape($documentType)."' AND active=1";
-		if ($requested !== '') $sql .= " AND code='".$this->db->escape($requested)."'";
+		if ($requestedId > 0) $sql .= ' AND rowid='.$requestedId;
+		elseif ($requested !== '') $sql .= " AND code='".$this->db->escape($requested)."'";
 		$sql .= ' ORDER BY is_default DESC,rowid ASC LIMIT 1';
 		$res = $this->db->query($sql);
 		return $res ? $this->db->fetch_object($res) : null;
+	}
+
+	public static function documentTypeForObject($object)
+	{
+		$element = is_object($object) && !empty($object->element) ? (string) $object->element : '';
+		if ($element === 'facture' && !empty($object->pos_source)) return 'takepos_invoice';
+		$map = array(
+			'propal' => 'sales_proposal', 'commande' => 'sales_order', 'facture' => 'customer_invoice',
+			'supplier_proposal' => 'supplier_proposal', 'order_supplier' => 'supplier_order', 'invoice_supplier' => 'supplier_invoice',
+			'shipping' => 'shipment', 'reception' => 'reception', 'payment' => 'customer_payment', 'payment_supplier' => 'supplier_payment',
+			'contrat' => 'contract', 'fichinter' => 'intervention', 'project' => 'project', 'project_task' => 'project_task',
+			'expensereport' => 'expense_report', 'mo' => 'manufacturing_order', 'bom' => 'bom', 'stocktransfer' => 'stock_transfer',
+			'accountingbookkeeping' => 'bookkeeping', 'asset' => 'asset', 'chequereceipt' => 'cheque_receipt', 'delivery' => 'delivery',
+			'holiday' => 'leave_request', 'evaluation' => 'hr_evaluation', 'productlot' => 'product_lot',
+			'ticket' => 'ticket', 'workstation' => 'workstation',
+		);
+		return isset($map[$element]) ? $map[$element] : '';
+	}
+
+	public static function numberingModelConstant($documentType)
+	{
+		$map = array(
+			'sales_proposal' => 'PROPALE_ADDON', 'sales_order' => 'COMMANDE_ADDON', 'customer_invoice' => 'FACTURE_ADDON',
+			'supplier_proposal' => 'SUPPLIER_PROPOSAL_ADDON', 'supplier_order' => 'COMMANDE_SUPPLIER_ADDON_NUMBER',
+			'supplier_invoice' => 'INVOICE_SUPPLIER_ADDON_NUMBER', 'shipment' => 'EXPEDITION_ADDON_NUMBER',
+			'reception' => 'RECEPTION_ADDON_NUMBER', 'customer_payment' => 'PAYMENT_ADDON', 'supplier_payment' => 'SUPPLIER_PAYMENT_ADDON',
+			'contract' => 'CONTRACT_ADDON', 'intervention' => 'FICHEINTER_ADDON', 'project' => 'PROJECT_ADDON',
+			'project_task' => 'PROJECT_TASK_ADDON', 'expense_report' => 'EXPENSEREPORT_ADDON', 'manufacturing_order' => 'MRP_MO_ADDON',
+			'bom' => 'BOM_ADDON', 'stock_transfer' => 'STOCKTRANSFER_STOCKTRANSFER_ADDON', 'bookkeeping' => 'BOOKKEEPING_ADDON',
+			'asset' => 'ASSET_ASSET_ADDON', 'cheque_receipt' => 'CHEQUERECEIPTS_ADDON', 'delivery' => 'DELIVERY_ADDON_NUMBER',
+			'leave_request' => 'HOLIDAY_ADDON', 'hr_evaluation' => 'HRMTEST_EVALUATION_ADDON', 'product_lot' => 'PRODUCTBATCH_LOT_ADDON',
+			'product_serial' => 'PRODUCTBATCH_SN_ADDON', 'takepos_invoice' => 'TAKEPOS_REF_ADDON', 'ticket' => 'TICKET_ADDON',
+			'workstation' => 'WORKSTATION_WORKSTATION_ADDON',
+		);
+		return isset($map[$documentType]) ? $map[$documentType] : '';
+	}
+
+	public static function usesNamingSeriesModel($documentType)
+	{
+		$constant = self::numberingModelConstant($documentType);
+		return $constant !== '' && strpos(strtolower(getDolGlobalString($constant)), 'namingseries') !== false;
+	}
+
+	public function documentChoice($documentType, $objectId)
+	{
+		$sql = 'SELECT * FROM '.$this->table('ns_document_choice').' WHERE entity='.$this->entity
+			." AND document_type='".$this->db->escape($documentType)."' AND fk_object=".(int) $objectId.' LIMIT 1';
+		$res = $this->db->query($sql);
+		return $res ? $this->db->fetch_object($res) : null;
+	}
+
+	public function saveDocumentChoice($documentType, $objectId, $seriesCode, $userId)
+	{
+		if ($objectId < 1 || $seriesCode === '') return 0;
+		$probe = (object) array('naming_series_code' => $seriesCode);
+		$series = $this->resolveSeries($documentType, $probe);
+		if (!$series) throw new Exception('Naming Series yang dipilih tidak aktif atau tidak sesuai dengan jenis dokumen.');
+		$sql = 'INSERT INTO '.$this->table('ns_document_choice')
+			.' (entity,document_type,fk_object,fk_series,fk_user,datec) VALUES ('
+			.$this->entity.",'".$this->db->escape($documentType)."',".(int) $objectId.','.(int) $series->rowid.','.(int) $userId.",'".$this->db->idate(dol_now())."')"
+			.' ON DUPLICATE KEY UPDATE fk_series=VALUES(fk_series),fk_user=VALUES(fk_user)';
+		if (!$this->db->query($sql)) throw new Exception($this->db->lasterror());
+		return (int) $series->rowid;
+	}
+
+	public function deleteDocumentChoice($documentType, $objectId)
+	{
+		return $this->db->query('DELETE FROM '.$this->table('ns_document_choice').' WHERE entity='.$this->entity
+			." AND document_type='".$this->db->escape($documentType)."' AND fk_object=".(int) $objectId);
 	}
 
 	public function validatePattern($pattern)

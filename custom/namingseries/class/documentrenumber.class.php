@@ -83,6 +83,106 @@ class NamingSeriesDocumentRenumber
 		return $this->ns->scopeKey($series, dol_now());
 	}
 
+	public function supportsType($type)
+	{
+		return !empty($this->definitions[$type]) && $this->tableExists($this->definitions[$type]['table']);
+	}
+
+	public function document($type, $id)
+	{
+		if (!$this->supportsType($type)) throw new InvalidArgumentException('Document type belum didukung untuk rename.');
+		$d = $this->definitions[$type];
+		$columns = $this->columns($d['table']);
+		$dateField = '';
+		foreach ($d['dates'] as $candidate) if (in_array($candidate, $columns, true)) { $dateField = $candidate; break; }
+		$sql = 'SELECT rowid,`'.$d['field'].'` document_ref'.($dateField ? ',`'.$dateField.'` document_date' : ',NULL document_date')
+			.' FROM '.MAIN_DB_PREFIX.$d['table'].' WHERE entity='.$this->entity.' AND rowid='.(int) $id;
+		if (!empty($d['where'])) $sql .= ' AND ('.$d['where'].')';
+		$res = $this->db->query($sql);
+		$row = $res ? $this->db->fetch_object($res) : null;
+		if (!$row) throw new RuntimeException('Dokumen tidak ditemukan pada entity aktif.');
+		return $row;
+	}
+
+	/** Rename one document reference without changing its internal ID. */
+	public function renameOne($type, $id, $newReference, $expectedOldReference, $userId)
+	{
+		$document = $this->document($type, $id);
+		$oldReference = (string) $document->document_ref;
+		$newReference = trim((string) $newReference);
+		if (!hash_equals($oldReference, (string) $expectedOldReference)) throw new RuntimeException('Nomor dokumen berubah sejak halaman dibuka. Muat ulang lalu coba lagi.');
+		if ($newReference === '' || preg_match('/[\x00-\x1F\x7F]/', $newReference)) throw new InvalidArgumentException('Nomor dokumen baru tidak valid.');
+		if ($newReference === $oldReference) throw new InvalidArgumentException('Nomor baru masih sama dengan nomor sekarang.');
+		if (strpos($newReference, '__NS_') === 0) throw new InvalidArgumentException('Prefix nomor tersebut dipakai secara internal.');
+
+		$d = $this->definitions[$type];
+		$maxLength = $this->columnLength($d['table'], $d['field']);
+		if ($maxLength > 0 && mb_strlen($newReference) > $maxLength) throw new InvalidArgumentException('Nomor dokumen maksimal '.$maxLength.' karakter.');
+
+		$ids = array((int) $id);
+		if (!empty($d['group_ref'])) {
+			$res = $this->db->query('SELECT rowid FROM '.MAIN_DB_PREFIX.$d['table'].' WHERE entity='.$this->entity
+				." AND `".$d['field']."`='".$this->db->escape($oldReference)."'");
+			$ids = array();
+			if ($res) while ($row = $this->db->fetch_object($res)) $ids[] = (int) $row->rowid;
+		}
+		$this->assertReferenceUnambiguous($type, $ids, $oldReference);
+		$res = $this->db->query('SELECT rowid FROM '.MAIN_DB_PREFIX.$d['table'].' WHERE entity='.$this->entity
+			." AND `".$d['field']."`='".$this->db->escape($newReference)."' AND rowid NOT IN (".implode(',', $ids).') LIMIT 1');
+		if (!$res) throw new RuntimeException($this->db->lasterror());
+		if ($this->db->num_rows($res)) throw new RuntimeException('Nomor tujuan sudah digunakan oleh dokumen lain: '.$newReference);
+
+		$series = $this->ns->resolveSeries($type, (object) array('id' => (int) $id));
+		$timestamp = !empty($document->document_date) ? strtotime((string) $document->document_date) : dol_now();
+		$scope = $series ? $this->ns->scopeKey($series, $timestamp) : 'manual';
+		$plan = array(
+			'type' => $type, 'scope' => $scope, 'series_id' => $series ? (int) $series->rowid : 0,
+			'table' => $d['table'], 'field' => $d['field'],
+			'mappings' => array(array('id' => (int) $id, 'ids' => $ids, 'old' => $oldReference, 'new' => $newReference,
+				'date' => $timestamp ? date('Y-m-d', $timestamp) : '')),
+		);
+		$plan['hash'] = hash('sha256', json_encode($plan));
+
+		$textColumns = $this->relatedTextColumns($d);
+		$filesystem = array();
+		try {
+			$this->stageDirectories($d, $plan, '', $filesystem);
+		} catch (Throwable $e) {
+			$this->rollbackDirectories($filesystem);
+			throw $e;
+		}
+
+		if (!$this->db->begin()) {
+			$this->rollbackDirectories($filesystem);
+			throw new RuntimeException('Transaksi database tidak dapat dimulai.');
+		}
+		try {
+			$locked = $this->db->query('SELECT rowid FROM '.MAIN_DB_PREFIX.$d['table'].' WHERE entity='.$this->entity
+				.' AND rowid IN ('.implode(',', $ids).") AND `".$d['field']."`='".$this->db->escape($oldReference)."' FOR UPDATE");
+			if (!$locked || $this->db->num_rows($locked) !== count($ids)) throw new RuntimeException('Dokumen berubah saat proses rename; transaksi dibatalkan.');
+			$tmp = '__NS_'.$id.'_'.substr($plan['hash'], 0, 8).'__';
+			$primaryRowId = count($ids) === 1 ? (int) $id : 0;
+			$this->setPrimaryReference($d, $ids, $oldReference, $tmp);
+			foreach ($textColumns as $table => $columns) {
+				$this->replace($table, $columns, $oldReference, $tmp, $table === $d['table'] ? $primaryRowId : 0);
+			}
+			$this->setPrimaryReference($d, $ids, $tmp, $newReference);
+			foreach ($textColumns as $table => $columns) {
+				$this->replace($table, $columns, $tmp, $newReference, $table === $d['table'] ? $primaryRowId : 0);
+			}
+			$this->finishDirectories($plan, $filesystem);
+			$this->ns->audit($series ? (int) $series->rowid : 0, 'RENAME', $scope, $oldReference, $newReference, $type, (int) $id, $newReference, $userId);
+			$check = $this->document($type, $id);
+			if ((string) $check->document_ref !== $newReference) throw new RuntimeException('Verifikasi hasil rename gagal.');
+			if (!$this->db->commit()) throw new RuntimeException('Commit database gagal.');
+		} catch (Throwable $e) {
+			$this->db->rollback();
+			$this->rollbackDirectories($filesystem);
+			throw $e;
+		}
+		return array('old' => $oldReference, 'new' => $newReference, 'documents' => count($filesystem));
+	}
+
 	public function preview($type, $scope)
 	{
 		if (empty($this->definitions[$type])) throw new InvalidArgumentException('Document type belum didukung untuk renumber.');
@@ -166,15 +266,7 @@ class NamingSeriesDocumentRenumber
 			if (!$res || $this->db->num_rows($res)) throw new RuntimeException('Referensi tujuan sudah digunakan: '.$target);
 		}
 
-		$wantedTextColumns = array(
-			'actioncomm' => array('label', 'note'), 'accounting_bookkeeping' => array('doc_ref', 'label_operation'),
-			'bank' => array('label', 'note'), 'ecm_files' => array('filepath', 'filename', 'fullpath_orig'),
-			'ns_audit' => array('document_ref'), 'pi_document_action' => array('element_ref', 'snapshot_json'),
-			'stock_mouvement' => array('label'),
-		);
-		if (empty($wantedTextColumns[$d['table']])) $wantedTextColumns[$d['table']] = array();
-		$wantedTextColumns[$d['table']][] = 'last_main_doc';
-		$textColumns = $this->availableTextColumns($wantedTextColumns);
+		$textColumns = $this->relatedTextColumns($d);
 		$backup = $this->backup($plan, $textColumns);
 		$filesystem = array();
 		try {
@@ -263,7 +355,9 @@ class NamingSeriesDocumentRenumber
 
 	private function backup($plan, $textColumns)
 	{
-		$dir = DOL_DATA_ROOT.'/namingseries_backups/document_renumber_'.date('Ymd_His').'_'.preg_replace('/[^a-z0-9_-]/i', '_', $plan['type'].'_'.$plan['scope']);
+		$base = DOL_DATA_ROOT.'/namingseries_backups/document_renumber_'.date('Ymd_His').'_'.preg_replace('/[^a-z0-9_-]/i', '_', $plan['type'].'_'.$plan['scope']);
+		$dir = $base;
+		for ($suffix = 2; is_dir($dir); $suffix++) $dir = $base.'_'.$suffix;
 		if (!mkdir($dir, 0750, true)) throw new RuntimeException('Folder backup tidak dapat dibuat.');
 		$payload = array('created_at' => date(DATE_ATOM), 'plan' => $plan, 'counter_before' => $this->ns->currentValue($plan['series_id'], $plan['scope']), 'documents' => array(), 'related_text_rows' => array());
 		foreach ($plan['mappings'] as $mapping) {
@@ -302,7 +396,7 @@ class NamingSeriesDocumentRenumber
 			$destination = $root.'/'.dol_sanitizeFileName($mapping['new']);
 			$temporary = $root.'/.ns_renumber_'.$mapping['id'].'_'.substr($plan['hash'], 0, 8);
 			if (file_exists($temporary)) throw new RuntimeException('Folder sementara sudah ada: '.$temporary);
-			$this->copyTree($source, $backupDir.'/documents/'.dol_sanitizeFileName($mapping['old']));
+			if ($backupDir !== '') $this->copyTree($source, $backupDir.'/documents/'.dol_sanitizeFileName($mapping['old']));
 			if (!rename($source, $temporary)) throw new RuntimeException('Folder dokumen gagal dipindahkan: '.$source);
 			$state[] = array('old' => $source, 'new' => $destination, 'tmp' => $temporary, 'old_ref' => $mapping['old'], 'new_ref' => $mapping['new'], 'stage' => 'tmp');
 		}
@@ -353,6 +447,47 @@ class NamingSeriesDocumentRenumber
 			if (!$this->tableExists($table)) continue; $available = $this->columns($table);
 			$found = array_values(array_intersect($columns, $available)); if ($found) $out[$table] = $found;
 		} return $out;
+	}
+
+	private function relatedTextColumns($definition)
+	{
+		$wanted = array(
+			'actioncomm' => array('label', 'note'), 'accounting_bookkeeping' => array('doc_ref', 'label_operation'),
+			'bank' => array('label', 'note'), 'ecm_files' => array('filepath', 'filename', 'fullpath_orig'),
+			'ns_audit' => array('document_ref'), 'pi_document_action' => array('element_ref', 'snapshot_json'),
+			'stock_mouvement' => array('label'),
+		);
+		if (empty($wanted[$definition['table']])) $wanted[$definition['table']] = array();
+		$wanted[$definition['table']][] = 'last_main_doc';
+		return $this->availableTextColumns($wanted);
+	}
+
+	private function columnLength($table, $column)
+	{
+		$res = $this->db->query('SHOW COLUMNS FROM '.MAIN_DB_PREFIX.$table." LIKE '".$this->db->escape($column)."'");
+		$row = $res ? $this->db->fetch_object($res) : null;
+		return $row && preg_match('/(?:var)?char\((\d+)\)/i', (string) $row->Type, $match) ? (int) $match[1] : 0;
+	}
+
+	private function assertReferenceUnambiguous($selectedType, $selectedIds, $reference)
+	{
+		$seen = array();
+		foreach ($this->definitions as $type => $definition) {
+			$key = $definition['table'].'|'.$definition['field'].'|'.(!empty($definition['where']) ? $definition['where'] : '');
+			if (isset($seen[$key]) || !$this->tableExists($definition['table'])) continue;
+			$seen[$key] = true;
+			$sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.$definition['table'].' WHERE entity='.$this->entity
+				." AND `".$definition['field']."`='".$this->db->escape($reference)."'";
+			if (!empty($definition['where'])) $sql .= ' AND ('.$definition['where'].')';
+			if ($definition['table'] === $this->definitions[$selectedType]['table'] && $definition['field'] === $this->definitions[$selectedType]['field']) {
+				$sql .= ' AND rowid NOT IN ('.implode(',', array_map('intval', $selectedIds)).')';
+			}
+			$sql .= ' LIMIT 1';
+			$res = $this->db->query($sql);
+			if ($res && $this->db->num_rows($res)) {
+				throw new RuntimeException('Nomor lama juga dipakai oleh dokumen lain. Rename langsung diblokir karena referensi teks terkait menjadi ambigu. Bedakan nomor tersebut terlebih dahulu.');
+			}
+		}
 	}
 
 	private function columns($table)
