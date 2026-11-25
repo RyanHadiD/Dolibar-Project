@@ -88,12 +88,18 @@ $getSourceLines = function ($documentId) use ($db, $isSupplier, $sourceTable, $s
 	$sql .= ' '.$priceColumn.' AS subprice, d.multicurrency_subprice, d.remise_percent, d.tva_tx, d.vat_src_code, d.localtax1_tx, d.localtax2_tx,';
 	$sql .= ' d.product_type, d.date_start, d.date_end, d.info_bits, d.special_code, d.rang,';
 	$sql .= $isSupplier ? " d.ref AS ref_supplier," : ' d.fk_product_fournisseur_price AS fk_fournprice, d.buy_price_ht AS pa_ht,';
+	if (!$isSupplier) {
+		$sql .= ' slx.pi_ppn_name, slx.pi_ppn_description, slx.pi_ppn_qty, slx.pi_ppn_note, slx.pi_ppn_uom,';
+	}
 	$sql .= ' '.$billedQtySql.' AS billed_qty,';
 	$sql .= ' CASE WHEN ROUND(sl.qty - '.$billedQtySql.', 5) > 0 THEN ROUND(sl.qty - '.$billedQtySql.', 5) ELSE 0 END AS outstanding_qty';
 	$sql .= ' FROM '.MAIN_DB_PREFIX.$sourceLineTable.' sl';
 	$sql .= ' JOIN '.MAIN_DB_PREFIX.$sourceTable.' src ON src.rowid=sl.'.$sourceForeignKey;
 	$sql .= ' JOIN '.MAIN_DB_PREFIX.$orderLineTable.' d ON d.rowid=sl.fk_elementdet';
 	$sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'product p ON p.rowid=sl.fk_product';
+	if (!$isSupplier) {
+		$sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'expeditiondet_extrafields slx ON slx.fk_object=sl.rowid';
+	}
 	$sql .= ' LEFT JOIN '.$customBilledSql.' ON billed.fk_source=sl.rowid';
 	$sql .= ' LEFT JOIN '.$legacyBilledSql.' ON legacy.fk_source=src.rowid';
 	$sql .= ' WHERE src.entity IN ('.$entitySql.') AND src.fk_statut IN (1,2,3) AND '.$currencyCondition.' AND sl.'.$sourceForeignKey.'='.(int) $documentId;
@@ -148,10 +154,16 @@ if ($action === 'import_items' && $sourceId > 0) {
 			if (!empty($line->vat_src_code) && strpos((string) $tva, '(') === false) {
 				$tva .= ' ('.$line->vat_src_code.')';
 			}
+			$lineOptions = array();
+			if (!$isSupplier) {
+				foreach (array('pi_ppn_name', 'pi_ppn_description', 'pi_ppn_qty', 'pi_ppn_note', 'pi_ppn_uom') as $optionName) {
+					$lineOptions['options_'.$optionName] = $line->$optionName;
+				}
+			}
 			if ($isSupplier) {
 				$result = $destination->addline($line->description, $line->subprice, $tva, $line->localtax1_tx, $line->localtax2_tx, $qty, (int) $line->fk_product, $line->remise_percent, $line->date_start ? strtotime($line->date_start) : 0, $line->date_end ? strtotime($line->date_end) : 0, 0, $line->info_bits, 'HT', $line->product_type, -1, 0, array(), $line->fk_unit, $lineId, $destinationCurrency !== $baseCurrency ? $line->multicurrency_subprice : 0, $line->ref_supplier, $line->special_code, 0, 0, 'reception');
 			} else {
-				$result = $destination->addline($line->description, $line->subprice, $qty, $tva, $line->localtax1_tx, $line->localtax2_tx, (int) $line->fk_product, $line->remise_percent, $line->date_start ? strtotime($line->date_start) : 0, $line->date_end ? strtotime($line->date_end) : 0, 0, $line->info_bits, 0, 'HT', 0, $line->product_type, -1, $line->special_code, 'shipping', $lineId, 0, $line->fk_fournprice, $line->pa_ht, '', array(), 100, 0, $line->fk_unit, $destinationCurrency !== $baseCurrency ? $line->multicurrency_subprice : 0);
+				$result = $destination->addline($line->description, $line->subprice, $qty, $tva, $line->localtax1_tx, $line->localtax2_tx, (int) $line->fk_product, $line->remise_percent, $line->date_start ? strtotime($line->date_start) : 0, $line->date_end ? strtotime($line->date_end) : 0, 0, $line->info_bits, 0, 'HT', 0, $line->product_type, -1, $line->special_code, 'shipping', $lineId, 0, $line->fk_fournprice, $line->pa_ht, '', $lineOptions, 100, 0, $line->fk_unit, $destinationCurrency !== $baseCurrency ? $line->multicurrency_subprice : 0);
 			}
 			if ($result <= 0) {
 				setEventMessages($destination->error, $destination->errors, 'errors');

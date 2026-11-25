@@ -32,7 +32,9 @@ sebelum perubahan disimpan dalam Riwayat Cancel/Revisi. Revisi Payment tetap
 memakai alur aman batalkan lalu buat ulang karena Payment native Dolibarr tidak
 memiliki status Draft yang dapat diedit.
 
-Modul versi 1.6.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
+Modul versi 1.7.0 untuk perpetual inventory dengan Moving Average per barang/gudang. Prinsipnya mengikuti [perpetual inventory ERPNext](https://docs.frappe.io/erpnext/perpetual-inventory): nilai stok dan jurnal persediaan berubah bersama. Modul ini bukan salinan penuh ERPNext.
+
+Baris Shipment dan Customer Invoice menyediakan field **Nama PPN**, **Deskripsi PPN**, **Qty PPN**, **Catatan**, dan **UOM PPN**. Nilai field ikut disalin ketika item Shipment ditarik ke Customer Invoice, baik melalui alur native Dolibarr maupun tombol **Get Items From Shipment** milik modul.
 
 ## Get Items From
 

@@ -11,7 +11,7 @@ class modPerpetualInventory extends DolibarrModules
 		$this->family = 'financial';
 		$this->name = 'PerpetualInventory';
 		$this->description = 'Perpetual inventory with moving-average valuation and linked accounting';
-		$this->version = '1.6.0';
+		$this->version = '1.7.0';
 		$this->const_name = 'MAIN_MODULE_PERPETUALINVENTORY';
 		$this->picto = 'stock';
 		$this->phpmin = array(7, 4);
@@ -66,7 +66,67 @@ class modPerpetualInventory extends DolibarrModules
 		if ($this->_load_tables('/perpetualinventory/sql/') < 0) {
 			return -1;
 		}
+		if ($this->installPpnLineExtraFields() < 0) {
+			return -1;
+		}
 		return $this->_init(array(), $options);
+	}
+
+	/**
+	 * Install the PPN information carried by Shipment and Customer Invoice lines.
+	 *
+	 * The same technical names are deliberately used on both line types. This
+	 * lets Dolibarr copy them in its native "create from Shipment" workflow and
+	 * keeps custom import paths consistent with the native one.
+	 *
+	 * @return int <0 on error, >0 on success
+	 */
+	private function installPpnLineExtraFields()
+	{
+		require_once DOL_DOCUMENT_ROOT.'/core/class/extrafields.class.php';
+
+		$extrafields = new ExtraFields($this->db);
+		$definitions = array(
+			array('pi_ppn_name', 'Nama PPN', 'varchar', 210, '255', array('css' => 'minwidth200')),
+			array('pi_ppn_description', 'Deskripsi PPN', 'text', 220, '', array('css' => 'minwidth300')),
+			array('pi_ppn_qty', 'Qty PPN', 'double', 230, '24,8', array('css' => 'width100 right')),
+			array('pi_ppn_note', 'Catatan', 'text', 240, '', array('css' => 'minwidth300')),
+			array('pi_ppn_uom', 'UOM PPN', 'varchar', 250, '50', array('css' => 'width100')),
+		);
+
+		foreach (array('expeditiondet', 'facturedet') as $elementType) {
+			foreach ($definitions as $definition) {
+				$result = $extrafields->addExtraField(
+					$definition[0],
+					$definition[1],
+					$definition[2],
+					$definition[3],
+					$definition[4],
+					$elementType,
+					0,
+					0,
+					'',
+					'',
+					0,
+					'',
+					'1',
+					'',
+					'',
+					'',
+					'',
+					'1',
+					0,
+					1,
+					$definition[5]
+				);
+				if ($result < 0) {
+					$this->error = 'Gagal membuat field '.$definition[1].' pada '.$elementType.': '.$extrafields->error;
+					return -1;
+				}
+			}
+		}
+
+		return 1;
 	}
 
 	public function remove($options = '')
